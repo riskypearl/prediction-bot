@@ -39,6 +39,7 @@ client.on('interactionCreate', async (interaction) => {
       case 'mypredictions':    return await handleMyPredictions(interaction);
       case 'leaderboard':      return await handleLeaderboard(interaction);
       case 'profile':          return await handleProfile(interaction);
+      case 'scoring':          return await handleScoring(interaction);
       case 'h2h':              return await handleH2H(interaction);
       case 'addmatch':         return await handleAddMatch(interaction);
       case 'setresult':        return await handleSetResult(interaction);
@@ -108,17 +109,39 @@ async function handleMatches(interaction) {
 
 async function handleFixtures(interaction) {
   await interaction.deferReply();
+  const when = interaction.options.getString('when') || 'all';
   const competition = interaction.options.getString('competition');
-  const matches = api.getUpcoming(competition, 10);
+
+  // Get date strings in London time
+  const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/London' }));
+  const todayStr = now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  const tomorrow = new Date(now); tomorrow.setDate(tomorrow.getDate() + 1);
+  const tomorrowStr = tomorrow.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+
+  let matches, title;
+  if (when === 'today') {
+    matches = db.getMatchesByDate(todayStr);
+    if (competition) matches = matches.filter(m => m.competition === competition);
+    title = `📅 Today's Fixtures (${todayStr})`;
+  } else if (when === 'tomorrow') {
+    matches = db.getMatchesByDate(tomorrowStr);
+    if (competition) matches = matches.filter(m => m.competition === competition);
+    title = `📅 Tomorrow's Fixtures (${tomorrowStr})`;
+  } else {
+    matches = api.getUpcoming(competition, 10);
+    title = competition ? `📅 Upcoming ${competition} Fixtures` : '📅 Upcoming Fixtures';
+  }
+
   if (matches.length === 0) {
-    return interaction.editReply({ embeds: [errorEmbed('No upcoming fixtures. Try `/sync` first.')] });
+    return interaction.editReply({ embeds: [errorEmbed(`No fixtures found. Try \`/sync\` to fetch the latest.`)] });
   }
   const lines = matches.map(m => {
     const gw = m.gameweek ? ` · GW${m.gameweek}` : '';
-    return `**#${m.id}** ${m.home_team} vs ${m.away_team}\n📅 ${m.match_date}${gw} · ${m.competition}`;
+    const lock = m.locked ? ' 🔒' : '';
+    return `**#${m.id}** ${m.home_team} vs ${m.away_team}${lock}\n📅 ${m.match_date}${gw} · ${m.competition}`;
   });
   const embed = new EmbedBuilder().setColor(0x3d195b)
-    .setTitle(competition ? `📅 Upcoming ${competition} Fixtures` : '📅 Upcoming Fixtures')
+    .setTitle(title)
     .setDescription(lines.join('\n\n'))
     .setFooter({ text: 'Use /predict <match_id> to submit your prediction' });
   return interaction.editReply({ embeds: [embed] });
@@ -171,7 +194,7 @@ async function handleMyPredictions(interaction) {
   const embed = new EmbedBuilder().setColor(0x5865f2)
     .setTitle(`📋 ${interaction.user.username}'s Predictions`)
     .setDescription(lines.join('\n\n'))
-    .setFooter({ text: '🎯 Exact=4pts · 📏 Close=2pts · ✅ Result=1pt' });
+    .setFooter({ text: '🎯 Exact=10pts · ✅ Result=3pts · 🎯 Home/Away=2pts' });
 
   return interaction.reply({ embeds: [embed], ephemeral: true });
 }
@@ -208,6 +231,33 @@ async function handleProfile(interaction) {
     return interaction.reply({ embeds: [errorEmbed(`${target.username} hasn't made any predictions yet!`)], ephemeral: true });
   }
   return interaction.reply({ embeds: [profileEmbed(target, stats)] });
+}
+
+// ── /scoring ──────────────────────────────────────────────────
+
+async function handleScoring(interaction) {
+  const embed = new EmbedBuilder()
+    .setColor(0xfee75c)
+    .setTitle('📊 How Scoring Works')
+    .setDescription([
+      '**For each team\'s goals:**',
+      '🎯 Exact goals predicted → **+2 pts**',
+      '📏 1 goal away → **+1 pt**',
+      '',
+      '**Bonuses:**',
+      '✅ Correct result (W/D/L) → **+3 pts**',
+      '💥 Exact score (both teams) → **+3 bonus pts**',
+      '',
+      '**Max possible: 10 pts** (2+2+3+3)',
+      '',
+      '**Examples:**',
+      '`Predicted 2-1, Actual 2-1` → 2+2+3+3 = **10pts** 💥',
+      '`Predicted 2-1, Actual 2-0` → 2+1+3 = **6pts**',
+      '`Predicted 2-1, Actual 1-0` → 1+1+3 = **5pts**',
+      '`Predicted 2-1, Actual 0-2` → 0+1+0 = **1pt**',
+      '`Predicted 2-1, Actual 0-3` → 0+0+0 = **0pts**',
+    ].join('\n'));
+  return interaction.reply({ embeds: [embed] });
 }
 
 // ── /h2h ──────────────────────────────────────────────────────
@@ -265,7 +315,7 @@ async function handleSetResult(interaction) {
     const embed = new EmbedBuilder().setColor(0x57f287)
       .setTitle(`⚽ Result: ${match.home_team} ${homeScore}–${awayScore} ${match.away_team}${gw}`)
       .setDescription(`${count} predictions scored!`)
-      .setFooter({ text: '🎯 Exact=4pts · 📏 Close=2pts · ✅ Result=1pt' });
+      .setFooter({ text: '🎯 Exact=10pts · ✅ Result=3pts · 🎯 Home/Away=2pts' });
     await channel.send({ embeds: [embed] });
 
     // Post mini leaderboard for the gameweek if applicable

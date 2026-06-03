@@ -22,6 +22,11 @@ const commands = [
   new SlashCommandBuilder()
     .setName('fixtures')
     .setDescription('Show upcoming fixtures from the API')
+    .addStringOption(o => o.setName('when').setDescription('When').addChoices(
+      { name: 'Today', value: 'today' },
+      { name: 'Tomorrow', value: 'tomorrow' },
+      { name: 'All upcoming', value: 'all' }
+    ))
     .addStringOption(o => o.setName('competition').setDescription('Filter by competition').addChoices(
       { name: 'Premier League', value: 'Premier League' },
       { name: 'World Cup', value: 'World Cup' }
@@ -54,6 +59,10 @@ const commands = [
     .setName('profile')
     .setDescription('View your stats or another player\'s')
     .addUserOption(o => o.setName('user').setDescription('User to view (leave blank for yourself)')),
+
+  new SlashCommandBuilder()
+    .setName('scoring')
+    .setDescription('Show how the scoring system works'),
 
   new SlashCommandBuilder()
     .setName('h2h')

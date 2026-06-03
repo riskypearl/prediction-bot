@@ -56,7 +56,7 @@ function leaderboardEmbed(rows, title = 'Overall Leaderboard') {
   const embed = new EmbedBuilder()
     .setColor(COLOURS.leaderboard)
     .setTitle(`🏆 ${title}`)
-    .setFooter({ text: '🎯 Exact=4pts · 📏 Close=2pts · ✅ Result=1pt' });
+    .setFooter({ text: '🎯 Exact=10pts · ✅ Result=3pts · 🎯 Home/Away=2pts' });
 
   if (rows.length === 0) {
     embed.setDescription('No scores yet!');

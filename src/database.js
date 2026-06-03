@@ -124,14 +124,23 @@ function getResult(h, a) {
 }
 
 function calcPoints(predHome, predAway, actualHome, actualAway) {
-  if (predHome === actualHome && predAway === actualAway) return 4; // exact
-  const predDiff = Math.abs(predHome - predAway);
-  const actualDiff = Math.abs(actualHome - actualAway);
-  const correctResult = getResult(predHome, predAway) === getResult(actualHome, actualAway);
-  const totalGoalDiff = Math.abs((predHome + predAway) - (actualHome + actualAway));
-  if (correctResult && totalGoalDiff <= 1) return 2; // close
-  if (correctResult) return 1; // correct result only
-  return 0;
+  let points = 0;
+
+  // Home goal scoring
+  if (predHome === actualHome) points += 2;
+  else if (Math.abs(predHome - actualHome) === 1) points += 1;
+
+  // Away goal scoring
+  if (predAway === actualAway) points += 2;
+  else if (Math.abs(predAway - actualAway) === 1) points += 1;
+
+  // Both exact bonus (brings total to 7)
+  if (predHome === actualHome && predAway === actualAway) points += 3;
+
+  // Correct result bonus
+  if (getResult(predHome, predAway) === getResult(actualHome, actualAway)) points += 3;
+
+  return points;
 }
 
 function scoreMatch(matchId, actualHome, actualAway) {
