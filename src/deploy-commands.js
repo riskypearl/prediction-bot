@@ -6,9 +6,10 @@ const commands = [
   new SlashCommandBuilder()
     .setName('predict')
     .setDescription('Submit your prediction for a match')
-    .addIntegerOption(o => o.setName('match_id').setDescription('Match ID').setRequired(true))
-    .addIntegerOption(o => o.setName('home_score').setDescription('Predicted home score').setRequired(true).setMinValue(0))
-    .addIntegerOption(o => o.setName('away_score').setDescription('Predicted away score').setRequired(true).setMinValue(0)),
+    .addStringOption(o => o.setName('competition').setDescription('Filter by competition').addChoices(
+      { name: 'Premier League', value: 'Premier League' },
+      { name: 'World Cup', value: 'World Cup' }
+    )),
 
   new SlashCommandBuilder()
     .setName('matches')

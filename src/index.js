@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, EmbedBuilder } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
 const db = require('./database');
 const { matchEmbed, matchListEmbed, leaderboardEmbed, profileEmbed, h2hEmbed, errorEmbed, successEmbed } = require('./embeds');
 const api = require('./football-api');
@@ -29,6 +29,14 @@ async function getAnnouncementChannel() {
 // ── Command router ────────────────────────────────────────────
 
 client.on('interactionCreate', async (interaction) => {
+  // Handle select menu for match selection
+  if (interaction.isStringSelectMenu() && interaction.customId === 'predict_match') {
+    return await handlePredictMatchSelected(interaction);
+  }
+  // Handle modal for score input
+  if (interaction.isModalSubmit() && interaction.customId.startsWith('predict_score_')) {
+    return await handlePredictScoreSubmit(interaction);
+  }
   if (!interaction.isChatInputCommand()) return;
   try {
     switch (interaction.commandName) {
@@ -62,14 +70,104 @@ client.on('interactionCreate', async (interaction) => {
 // ── /predict ──────────────────────────────────────────────────
 
 async function handlePredict(interaction) {
-  const matchId   = interaction.options.getInteger('match_id');
-  const homeScore = interaction.options.getInteger('home_score');
-  const awayScore = interaction.options.getInteger('away_score');
+  const competition = interaction.options.getString('competition');
+  const matches = db.getUpcomingMatches(competition).filter(m => !m.locked && m.home_score === null);
+
+  if (matches.length === 0) {
+    return interaction.reply({ embeds: [errorEmbed('No upcoming matches to predict! Check back later.')], ephemeral: true });
+  }
+
+  // Build dropdown of matches (max 25 options)
+  const options = matches.slice(0, 25).map(m => {
+    const gw = m.gameweek ? ` GW${m.gameweek}` : '';
+    const existing = db.getUserPrediction(interaction.user.id, m.id);
+    const label = `${m.home_team} vs ${m.away_team}`;
+    const desc = `${m.match_date}${gw}${existing ? ` · Your pick: ${existing.home_score}-${existing.away_score}` : ''}`;
+    return {
+      label: label.length > 100 ? label.substring(0, 97) + '...' : label,
+      description: desc.length > 100 ? desc.substring(0, 97) + '...' : desc,
+      value: String(m.id),
+      emoji: existing ? '✏️' : '⚽',
+    };
+  });
+
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId('predict_match')
+    .setPlaceholder('Select a match to predict...')
+    .addOptions(options);
+
+  const row = new ActionRowBuilder().addComponents(menu);
+
+  return interaction.reply({
+    embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle('⚽ Select a Match to Predict').setDescription('Choose a match from the dropdown below. You can update your prediction any time before kickoff.')],
+    components: [row],
+    ephemeral: true,
+  });
+}
+
+// ── Predict: match selected from dropdown ─────────────────────
+
+async function handlePredictMatchSelected(interaction) {
+  const matchId = parseInt(interaction.values[0]);
   const match = db.getMatch(matchId);
 
-  if (!match) return interaction.reply({ embeds: [errorEmbed(`Match #${matchId} not found.`)], ephemeral: true });
-  if (match.locked) return interaction.reply({ embeds: [errorEmbed(`Match #${matchId} is locked!`)], ephemeral: true });
-  if (match.home_score !== null) return interaction.reply({ embeds: [errorEmbed(`Match #${matchId} already played.`)], ephemeral: true });
+  if (!match || match.locked || match.home_score !== null) {
+    return interaction.reply({ embeds: [errorEmbed('This match is no longer available.')], ephemeral: true });
+  }
+
+  const existing = db.getUserPrediction(interaction.user.id, matchId);
+  const gw = match.gameweek ? ` · GW${match.gameweek}` : '';
+
+  // Show a modal for score input
+  const modal = new ModalBuilder()
+    .setCustomId(`predict_score_${matchId}`)
+    .setTitle(`${match.home_team} vs ${match.away_team}`);
+
+  const homeInput = new TextInputBuilder()
+    .setCustomId('home_score')
+    .setLabel(`${match.home_team} (Home) Score`)
+    .setStyle(TextInputStyle.Short)
+    .setPlaceholder('e.g. 2')
+    .setMinLength(1)
+    .setMaxLength(2)
+    .setRequired(true);
+
+  if (existing) homeInput.setValue(String(existing.home_score));
+
+  const awayInput = new TextInputBuilder()
+    .setCustomId('away_score')
+    .setLabel(`${match.away_team} (Away) Score`)
+    .setStyle(TextInputStyle.Short)
+    .setPlaceholder('e.g. 1')
+    .setMinLength(1)
+    .setMaxLength(2)
+    .setRequired(true);
+
+  if (existing) awayInput.setValue(String(existing.away_score));
+
+  modal.addComponents(
+    new ActionRowBuilder().addComponents(homeInput),
+    new ActionRowBuilder().addComponents(awayInput),
+  );
+
+  return interaction.showModal(modal);
+}
+
+// ── Predict: score submitted via modal ────────────────────────
+
+async function handlePredictScoreSubmit(interaction) {
+  const matchId   = parseInt(interaction.customId.replace('predict_score_', ''));
+  const homeScore = parseInt(interaction.fields.getTextInputValue('home_score'));
+  const awayScore = parseInt(interaction.fields.getTextInputValue('away_score'));
+
+  if (isNaN(homeScore) || isNaN(awayScore) || homeScore < 0 || awayScore < 0) {
+    return interaction.reply({ embeds: [errorEmbed('Please enter valid scores (numbers only).')], ephemeral: true });
+  }
+
+  const match = db.getMatch(matchId);
+  if (!match || match.locked || match.home_score !== null) {
+    return interaction.reply({ embeds: [errorEmbed('This match is no longer available.')], ephemeral: true });
+  }
 
   db.upsertPrediction(interaction.user.id, interaction.user.username, matchId, homeScore, awayScore);
 
