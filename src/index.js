@@ -343,9 +343,9 @@ async function handleProfile(interaction) {
         const gw = r.gameweek ? ` GW${r.gameweek}` : '';
         return `⚽ **${r.home_team} vs ${r.away_team}**${gw}
 📅 ${r.match_date} · Pick: **${r.pred_home}–${r.pred_away}**`;
-      }).join('
+}).join('\n')
 
-')
+
     : 'No upcoming predictions yet.';
 
   if (!stats) {
