@@ -325,10 +325,57 @@ async function handleLeaderboard(interaction) {
 async function handleProfile(interaction) {
   const target = interaction.options.getUser('user') || interaction.user;
   const stats = db.getUserProfile(target.id);
+
+  // Get upcoming predictions
+  const upcoming = db.db.prepare(`
+    SELECT m.id, m.home_team, m.away_team, m.match_date, m.gameweek, m.competition,
+           p.home_score as pred_home, p.away_score as pred_away
+    FROM predictions p
+    JOIN matches m ON p.match_id = m.id
+    WHERE p.user_id = ? AND m.home_score IS NULL
+    ORDER BY m.match_date ASC
+    LIMIT 10
+  `).all(target.id);
+
+  // Build upcoming predictions text
+  const upcomingLines = upcoming.length > 0
+    ? upcoming.map(r => {
+        const gw = r.gameweek ? ` GW${r.gameweek}` : '';
+        return `⚽ **${r.home_team} vs ${r.away_team}**${gw}
+📅 ${r.match_date} · Pick: **${r.pred_home}–${r.pred_away}**`;
+      }).join('
+
+')
+    : 'No upcoming predictions yet.';
+
   if (!stats) {
-    return interaction.reply({ embeds: [errorEmbed(`${target.username} hasn't made any predictions yet!`)], ephemeral: true });
+    // No scored predictions yet but might have upcoming picks
+    const embed = new EmbedBuilder()
+      .setColor(0x9b59b6)
+      .setTitle(`📊 ${target.username}'s Profile`)
+      .setDescription('No scored predictions yet!')
+      .addFields({ name: '📋 Upcoming Predictions', value: upcomingLines });
+    return interaction.reply({ embeds: [embed] });
   }
-  return interaction.reply({ embeds: [profileEmbed(target, stats)] });
+
+  const streak = stats.current_streak >= 3 ? ` 🔥 On a ${stats.current_streak} streak!` : '';
+  const embed = new EmbedBuilder()
+    .setColor(0x9b59b6)
+    .setTitle(`📊 ${target.username}'s Profile${streak}`)
+    .addFields(
+      { name: '🏆 Total Points', value: String(stats.total_points), inline: true },
+      { name: '📋 Predictions', value: String(stats.predictions_scored), inline: true },
+      { name: '​', value: '​', inline: true },
+      { name: '🎯 Exact Scores', value: String(stats.exact_scores), inline: true },
+      { name: '📏 Close Scores', value: String(stats.close_scores || 0), inline: true },
+      { name: '✅ Correct Results', value: String(stats.correct_results), inline: true },
+      { name: '🔥 Current Streak', value: String(stats.current_streak), inline: true },
+      { name: '⭐ Best Streak', value: String(stats.best_streak), inline: true },
+      { name: '​', value: '​', inline: true },
+      { name: '📋 Upcoming Predictions', value: upcomingLines },
+    );
+
+  return interaction.reply({ embeds: [embed] });
 }
 
 // ── /scoring ──────────────────────────────────────────────────
@@ -517,9 +564,52 @@ async function autoSync() {
   try {
     console.log('🔄 Auto-syncing...');
     const results = await api.syncAll();
+
     for (const [comp, r] of Object.entries(results)) {
-      if (r.error) console.error(`  ❌ ${comp}: ${r.error}`);
-      else console.log(`  ✅ ${comp}: ${r.fixtures} fixtures, ${r.scored} scored`);
+      if (r.error) {
+        console.error(`  ❌ ${comp}: ${r.error}`);
+        continue;
+      }
+      console.log(`  ✅ ${comp}: ${r.fixtures} fixtures, ${r.scored} scored`);
+
+      // Announce each scored match
+      if (r.scoredMatches && r.scoredMatches.length > 0) {
+        const channel = await getAnnouncementChannel();
+
+        for (const { match, homeScore, awayScore, predictionsCount } of r.scoredMatches) {
+          const gw = match.gameweek ? ` (GW${match.gameweek})` : '';
+
+          // Post result to announcement channel
+          if (channel) {
+            const resultEmbed = new EmbedBuilder()
+              .setColor(0x57f287)
+              .setTitle(`⚽ Result: ${match.home_team} ${homeScore}–${awayScore} ${match.away_team}${gw}`)
+              .setDescription(`Points awarded to ${predictionsCount} prediction(s)!`)
+              .setFooter({ text: '🎯 Exact=10pts · ✅ Result=3pts · Use /leaderboard to check standings' });
+            await channel.send({ embeds: [resultEmbed] });
+
+            // Post mini leaderboard if gameweek match
+            if (match.gameweek) {
+              const gwRows = db.getGameweekLeaderboard(match.gameweek);
+              if (gwRows.length > 0) {
+                const { leaderboardEmbed } = require('./embeds');
+                await channel.send({ embeds: [leaderboardEmbed(gwRows, `GW${match.gameweek} Standings`)] });
+              }
+            }
+          }
+
+          // DM each user their result
+          const predictions = db.getPredictionsForMatch(match.id);
+          for (const pred of predictions) {
+            try {
+              const user = await client.users.fetch(pred.user_id);
+              const icon = pred.points >= 7 ? '💥' : pred.points >= 3 ? '✅' : pred.points > 0 ? '📏' : '❌';
+              await user.send(`${icon} **${match.home_team} ${homeScore}–${awayScore} ${match.away_team}**
+Your prediction: **${pred.home_score}–${pred.away_score}** → **${pred.points} points**`);
+            } catch {}
+          }
+        }
+      }
     }
   } catch (err) {
     console.error('Auto-sync error:', err.message);

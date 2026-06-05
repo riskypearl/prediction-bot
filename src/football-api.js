@@ -42,21 +42,24 @@ async function syncFixtures(competitionName) {
 
 async function syncResults(competitionName) {
   const code = COMPETITIONS[competitionName];
-  if (!code) return 0;
+  if (!code) return { count: 0, matches: [] };
 
   const data = await apiFetch(`/competitions/${code}/matches?status=FINISHED&limit=10`);
 
-  let scored = 0;
+  let count = 0;
+  const scoredMatches = [];
+
   for (const match of data.matches || []) {
     const row = db.db.prepare('SELECT * FROM matches WHERE api_id = ?').get(String(match.id));
     if (!row || row.home_score !== null) continue;
     const home = match.score.fullTime.home;
     const away = match.score.fullTime.away;
     if (home === null || away === null) continue;
-    db.setResult(row.id, home, away);
-    scored++;
+    const predictionsCount = db.setResult(row.id, home, away);
+    scoredMatches.push({ match: row, homeScore: home, awayScore: away, predictionsCount });
+    count++;
   }
-  return scored;
+  return { count, matches: scoredMatches };
 }
 
 async function syncAll() {
@@ -64,10 +67,10 @@ async function syncAll() {
   for (const comp of Object.keys(COMPETITIONS)) {
     try {
       const fixtures = await syncFixtures(comp);
-      const scored   = await syncResults(comp);
-      results[comp] = { fixtures, scored };
+      const { count, matches } = await syncResults(comp);
+      results[comp] = { fixtures, scored: count, scoredMatches: matches };
     } catch (err) {
-      results[comp] = { error: err.message };
+      results[comp] = { error: err.message, fixtures: 0, scored: 0, scoredMatches: [] };
     }
   }
   return results;
