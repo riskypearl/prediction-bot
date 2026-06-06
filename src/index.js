@@ -192,31 +192,52 @@ async function handlePredictScoreSubmit(interaction) {
 // ── /predictgw ────────────────────────────────────────────────
 
 async function handlePredictGW(interaction) {
-  // Find the next open PL gameweek
-  const rows = await db.query(
-    `SELECT DISTINCT gameweek FROM matches
-     WHERE competition = 'Premier League'
-       AND gameweek IS NOT NULL
+  // Try gameweek-based competition first (PL), then fall back to date-based (World Cup etc.)
+  let matches = [];
+  let groupLabel = '';
+
+  // 1. Look for the next open gameweek across any competition
+  const gwRows = await db.query(
+    `SELECT DISTINCT competition, gameweek FROM matches
+     WHERE gameweek IS NOT NULL
        AND home_score IS NULL
        AND locked = 0
      ORDER BY gameweek ASC
      LIMIT 1`
   );
 
-  if (rows.length === 0) {
-    return interaction.reply({ embeds: [errorEmbed('No open Premier League gameweek found. Check back later or use `/sync`.')], ephemeral: true });
+  if (gwRows.length > 0) {
+    const { competition, gameweek } = gwRows[0];
+    const allMatches = await db.getMatchesByGameweek(gameweek, competition);
+    matches = allMatches.filter(m => !m.locked && m.home_score === null);
+    groupLabel = `GW${gameweek} · ${competition}`;
   }
 
-  const gameweek = rows[0].gameweek;
-  const allMatches = await db.getMatchesByGameweek(gameweek, 'Premier League');
-  const matches = allMatches.filter(m => !m.locked && m.home_score === null);
+  // 2. If no gameweek fixtures, find the next match date across all competitions
+  if (matches.length === 0) {
+    const dateRows = await db.query(
+      `SELECT DISTINCT match_date FROM matches
+       WHERE gameweek IS NULL
+         AND home_score IS NULL
+         AND locked = 0
+       ORDER BY match_date ASC
+       LIMIT 1`
+    );
+
+    if (dateRows.length > 0) {
+      const nextDate = dateRows[0].match_date;
+      const allMatches = await db.getMatchesByDate(nextDate);
+      matches = allMatches.filter(m => !m.locked && m.home_score === null);
+      groupLabel = nextDate;
+    }
+  }
 
   if (matches.length === 0) {
-    return interaction.reply({ embeds: [errorEmbed(`GW${gameweek} has no open matches.`)], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('No open fixtures found. Check back later or use `/sync`.')], ephemeral: true });
   }
 
-  // Store session
-  gwSessions.set(interaction.user.id, { matches, page: 0, saved: [], failed: [] });
+  // Store session (include groupLabel for modal title)
+  gwSessions.set(interaction.user.id, { matches, page: 0, saved: [], failed: [], groupLabel });
 
   // Open modal for matches 1-5 (page 0)
   return showGWModal(interaction, interaction.user.id, 0);
@@ -234,9 +255,10 @@ async function showGWModal(interaction, userId, page) {
   const isLastPage = start + 5 >= matches.length;
   const totalPages = Math.ceil(matches.length / 5);
 
+  const title = `${session.groupLabel || 'Predictions'} (${page + 1}/${totalPages})`;
   const modal = new ModalBuilder()
     .setCustomId(`predictgw_page${page}`)
-    .setTitle(`GW Predictions (${page + 1}/${totalPages})`);
+    .setTitle(title.length > 45 ? title.substring(0, 42) + '...' : title);
 
   for (const m of pageMatches) {
     const existing = await db.getUserPrediction(userId, m.id);
