@@ -22,9 +22,9 @@ async function syncFixtures(competitionName) {
 
   let count = 0;
   for (const match of data.matches || []) {
-    // Skip fixtures with missing team names (e.g. WC placeholders like "Winner Group A")
-    const homeName = match.homeTeam?.name;
-    const awayName = match.awayTeam?.name;
+    // Explicitly check for null/undefined/empty — WC returns { name: null } for placeholder fixtures
+    const homeName = match.homeTeam && match.homeTeam.name != null && match.homeTeam.name !== '' ? match.homeTeam.name : null;
+    const awayName = match.awayTeam && match.awayTeam.name != null && match.awayTeam.name !== '' ? match.awayTeam.name : null;
     if (!homeName || !awayName) continue;
 
     const kickoffTs = Math.floor(new Date(match.utcDate).getTime() / 1000);

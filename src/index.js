@@ -1,5 +1,5 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ButtonBuilder, ButtonStyle } = require('discord.js');
 const db = require('./database');
 const { matchEmbed, matchListEmbed, leaderboardEmbed, profileEmbed, h2hEmbed, errorEmbed, successEmbed } = require('./embeds');
 const api = require('./football-api');
@@ -38,8 +38,12 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.isModalSubmit() && interaction.customId.startsWith('predict_score_')) {
     return await handlePredictScoreSubmit(interaction);
   }
-  if (interaction.isModalSubmit() && interaction.customId.startsWith('predictgw_')) {
+  if (interaction.isModalSubmit() && interaction.customId.startsWith('predictgw_page')) {
     return await handlePredictGWModalSubmit(interaction);
+  }
+  // Button to open next predictgw modal page
+  if (interaction.isButton() && interaction.customId.startsWith('predictgw_next_')) {
+    return await handlePredictGWNextPage(interaction);
   }
   if (!interaction.isChatInputCommand()) return;
   try {
@@ -194,14 +198,10 @@ async function handlePredictGW(interaction) {
   let matches = [];
   let groupLabel = '';
 
-  // 1. Look for the next open gameweek across any competition
   const gwRows = await db.query(
     `SELECT DISTINCT competition, gameweek FROM matches
-     WHERE gameweek IS NOT NULL
-       AND home_score IS NULL
-       AND locked = 0
-     ORDER BY gameweek ASC
-     LIMIT 1`
+     WHERE gameweek IS NOT NULL AND home_score IS NULL AND locked = 0
+     ORDER BY gameweek ASC LIMIT 1`
   );
 
   if (gwRows.length > 0) {
@@ -211,17 +211,12 @@ async function handlePredictGW(interaction) {
     groupLabel = `GW${gameweek} · ${competition}`;
   }
 
-  // 2. If no gameweek fixtures, find the next match date across all competitions
   if (matches.length === 0) {
     const dateRows = await db.query(
       `SELECT DISTINCT match_date FROM matches
-       WHERE gameweek IS NULL
-         AND home_score IS NULL
-         AND locked = 0
-       ORDER BY match_date ASC
-       LIMIT 1`
+       WHERE gameweek IS NULL AND home_score IS NULL AND locked = 0
+       ORDER BY match_date ASC LIMIT 1`
     );
-
     if (dateRows.length > 0) {
       const nextDate = dateRows[0].match_date;
       const allMatches = await db.getMatchesByDate(nextDate);
@@ -234,32 +229,26 @@ async function handlePredictGW(interaction) {
     return interaction.reply({ embeds: [errorEmbed('No open fixtures found. Check back later or use `/sync`.')], ephemeral: true });
   }
 
-  // Pre-fetch all existing predictions BEFORE opening the modal
-  // This must happen before showModal() to avoid the 3-second interaction timeout
+  // Pre-fetch existing predictions for page 0 before showModal
   const existingPreds = {};
   for (const m of matches.slice(0, 5)) {
     const pred = await db.getUserPrediction(interaction.user.id, m.id);
     if (pred) existingPreds[m.id] = pred;
   }
 
-  // Store session with pre-fetched predictions
-  gwSessions.set(interaction.user.id, { matches, page: 0, saved: [], failed: [], groupLabel, existingPreds });
+  gwSessions.set(interaction.user.id, { matches, saved: [], failed: [], groupLabel, existingPreds });
 
-  // Build and show modal synchronously (no async calls after this)
-  return showGWModal(interaction, interaction.user.id, 0);
+  // showModal called immediately after all awaits — still within 3s window
+  return interaction.showModal(buildGWModal(interaction.user.id, 0));
 }
 
-// ── predictgw: build and show modal for a page ────────────────
-// NOTE: existingPreds must already be in session — no async DB calls here
+// ── predictgw: build modal (pure sync, no DB calls) ──────────
 
-function showGWModal(interaction, userId, page) {
+function buildGWModal(userId, page) {
   const session = gwSessions.get(userId);
-  if (!session) return interaction.reply({ embeds: [errorEmbed('Session expired. Please run `/predictgw` again.')], ephemeral: true });
-
   const { matches, groupLabel, existingPreds } = session;
   const start = page * 5;
   const pageMatches = matches.slice(start, start + 5);
-  const isLastPage = start + 5 >= matches.length;
   const totalPages = Math.ceil(matches.length / 5);
 
   const title = `${groupLabel || 'Predictions'} (${page + 1}/${totalPages})`;
@@ -277,20 +266,20 @@ function showGWModal(interaction, userId, page) {
       .setPlaceholder('e.g. 2-1')
       .setMinLength(3)
       .setMaxLength(7)
-      .setRequired(!isLastPage);
+      .setRequired(true);
 
     if (existing) input.setValue(`${existing.home_score}-${existing.away_score}`);
     modal.addComponents(new ActionRowBuilder().addComponents(input));
   }
 
-  return interaction.showModal(modal);
+  return modal;
 }
 
-// ── predictgw: modal submitted ────────────────────────────────
+// ── predictgw: modal page submitted ──────────────────────────
+// Save this page's data, then either show "Continue" button or summary
 
 async function handlePredictGWModalSubmit(interaction) {
-  const pageStr = interaction.customId.replace('predictgw_page', '');
-  const page = parseInt(pageStr);
+  const page = parseInt(interaction.customId.replace('predictgw_page', ''));
   const session = gwSessions.get(interaction.user.id);
 
   if (!session) {
@@ -301,7 +290,7 @@ async function handlePredictGWModalSubmit(interaction) {
   const start = page * 5;
   const pageMatches = matches.slice(start, start + 5);
 
-  // Parse and save each input
+  // Save predictions from this page
   for (const m of pageMatches) {
     const raw = interaction.fields.getTextInputValue(`match_${m.id}`).trim();
     if (!raw) continue;
@@ -332,40 +321,71 @@ async function handlePredictGWModalSubmit(interaction) {
   const hasMore = nextPage * 5 < matches.length;
 
   if (hasMore) {
-    // Pre-fetch existing predictions for next page before showing modal
-    const nextStart = nextPage * 5;
-    const nextPageMatches = matches.slice(nextStart, nextStart + 5);
+    // Pre-fetch existing preds for next page (DB calls BEFORE we reply)
+    const nextPageMatches = matches.slice(nextPage * 5, nextPage * 5 + 5);
     for (const m of nextPageMatches) {
       const pred = await db.getUserPrediction(interaction.user.id, m.id);
       if (pred) session.existingPreds[m.id] = pred;
     }
-    session.page = nextPage;
-    // showModal must be called synchronously after the awaits above
-    return showGWModal(interaction, interaction.user.id, nextPage);
+
+    // Reply with a "Continue" button — clicking it gives a fresh interaction
+    // so showModal will work on that button click without timeout issues
+    const continueBtn = new ButtonBuilder()
+      .setCustomId(`predictgw_next_${nextPage}`)
+      .setLabel(`Continue to matches ${nextPage * 5 + 1}–${Math.min(nextPage * 5 + 5, matches.length)} →`)
+      .setStyle(ButtonStyle.Primary);
+
+    const savedSoFar = session.saved.length > 0
+      ? session.saved.map(s => `✅ ${s}`).join('\n')
+      : 'None yet';
+
+    return interaction.reply({
+      embeds: [
+        new EmbedBuilder()
+          .setColor(0x5865f2)
+          .setTitle(`⚽ Page ${page + 1} saved! Click to continue...`)
+          .addFields({ name: 'Saved so far', value: savedSoFar })
+      ],
+      components: [new ActionRowBuilder().addComponents(continueBtn)],
+      ephemeral: true,
+    });
   }
 
   // All done — show summary
   gwSessions.delete(interaction.user.id);
+  return interaction.reply({ embeds: [buildSummaryEmbed(session)], ephemeral: true });
+}
 
+// ── predictgw: "Continue" button clicked ─────────────────────
+// Fresh button interaction — showModal works here with no timeout issues
+
+async function handlePredictGWNextPage(interaction) {
+  const nextPage = parseInt(interaction.customId.replace('predictgw_next_', ''));
+  const session = gwSessions.get(interaction.user.id);
+
+  if (!session) {
+    return interaction.reply({ embeds: [errorEmbed('Session expired. Please run `/predictgw` again.')], ephemeral: true });
+  }
+
+  // showModal is the FIRST thing called on this fresh button interaction
+  return interaction.showModal(buildGWModal(interaction.user.id, nextPage));
+}
+
+// ── predictgw: build summary embed ───────────────────────────
+
+function buildSummaryEmbed(session) {
   const savedLines = session.saved.length > 0
     ? session.saved.map(s => `✅ ${s}`).join('\n')
     : 'None';
-  const failedLines = session.failed.length > 0
-    ? session.failed.map(s => `❌ ${s}`).join('\n')
-    : null;
-
   const embed = new EmbedBuilder()
     .setColor(session.saved.length > 0 ? 0x57f287 : 0xed4245)
     .setTitle('⚽ Gameweek Predictions Saved!')
     .addFields({ name: `✅ Saved (${session.saved.length})`, value: savedLines });
-
-  if (failedLines) {
-    embed.addFields({ name: `❌ Failed (${session.failed.length})`, value: failedLines });
+  if (session.failed.length > 0) {
+    embed.addFields({ name: `❌ Failed (${session.failed.length})`, value: session.failed.map(s => `❌ ${s}`).join('\n') });
   }
-
   embed.setFooter({ text: 'Use /predictgw again to update any predictions before kickoff.' });
-
-  return interaction.reply({ embeds: [embed], ephemeral: true });
+  return embed;
 }
 
 // ── /matches ──────────────────────────────────────────────────
