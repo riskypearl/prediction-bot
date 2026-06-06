@@ -26,6 +26,10 @@ async function getAnnouncementChannel() {
   try { return await client.channels.fetch(channelId); } catch { return null; }
 }
 
+// ── In-memory store for predictgw sessions ────────────────────
+// Key: userId, Value: { matches, page, savedPredictions }
+const gwSessions = new Map();
+
 // ── Command router ────────────────────────────────────────────
 
 client.on('interactionCreate', async (interaction) => {
@@ -35,10 +39,14 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.isModalSubmit() && interaction.customId.startsWith('predict_score_')) {
     return await handlePredictScoreSubmit(interaction);
   }
+  if (interaction.isModalSubmit() && interaction.customId.startsWith('predictgw_')) {
+    return await handlePredictGWModalSubmit(interaction);
+  }
   if (!interaction.isChatInputCommand()) return;
   try {
     switch (interaction.commandName) {
       case 'predict':          return await handlePredict(interaction);
+      case 'predictgw':        return await handlePredictGW(interaction);
       case 'matches':          return await handleMatches(interaction);
       case 'fixtures':         return await handleFixtures(interaction);
       case 'results':          return await handleResults(interaction);
@@ -177,6 +185,150 @@ async function handlePredictScoreSubmit(interaction) {
       { name: 'Date', value: match.match_date, inline: true },
     )
     .setFooter({ text: 'You can update your prediction any time before the match locks.' });
+
+  return interaction.reply({ embeds: [embed], ephemeral: true });
+}
+
+// ── /predictgw ────────────────────────────────────────────────
+
+async function handlePredictGW(interaction) {
+  // Find the next open PL gameweek
+  const rows = await db.query(
+    `SELECT DISTINCT gameweek FROM matches
+     WHERE competition = 'Premier League'
+       AND gameweek IS NOT NULL
+       AND home_score IS NULL
+       AND locked = 0
+     ORDER BY gameweek ASC
+     LIMIT 1`
+  );
+
+  if (rows.length === 0) {
+    return interaction.reply({ embeds: [errorEmbed('No open Premier League gameweek found. Check back later or use `/sync`.')], ephemeral: true });
+  }
+
+  const gameweek = rows[0].gameweek;
+  const allMatches = await db.getMatchesByGameweek(gameweek, 'Premier League');
+  const matches = allMatches.filter(m => !m.locked && m.home_score === null);
+
+  if (matches.length === 0) {
+    return interaction.reply({ embeds: [errorEmbed(`GW${gameweek} has no open matches.`)], ephemeral: true });
+  }
+
+  // Store session
+  gwSessions.set(interaction.user.id, { matches, page: 0, saved: [], failed: [] });
+
+  // Open modal for matches 1-5 (page 0)
+  return showGWModal(interaction, interaction.user.id, 0);
+}
+
+// ── predictgw: build and show modal for a page ────────────────
+
+async function showGWModal(interaction, userId, page) {
+  const session = gwSessions.get(userId);
+  if (!session) return;
+
+  const { matches } = session;
+  const start = page * 5;
+  const pageMatches = matches.slice(start, start + 5);
+  const isLastPage = start + 5 >= matches.length;
+  const totalPages = Math.ceil(matches.length / 5);
+
+  const modal = new ModalBuilder()
+    .setCustomId(`predictgw_page${page}`)
+    .setTitle(`GW Predictions (${page + 1}/${totalPages})`);
+
+  for (const m of pageMatches) {
+    const existing = await db.getUserPrediction(userId, m.id);
+    const label = `${m.home_team} vs ${m.away_team}`;
+    const input = new TextInputBuilder()
+      .setCustomId(`match_${m.id}`)
+      .setLabel(label.length > 45 ? label.substring(0, 42) + '...' : label)
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder('e.g. 2-1')
+      .setMinLength(3)
+      .setMaxLength(7)
+      .setRequired(!isLastPage); // last page inputs optional if partial gw
+
+    if (existing) input.setValue(`${existing.home_score}-${existing.away_score}`);
+    modal.addComponents(new ActionRowBuilder().addComponents(input));
+  }
+
+  return interaction.showModal(modal);
+}
+
+// ── predictgw: modal submitted ────────────────────────────────
+
+async function handlePredictGWModalSubmit(interaction) {
+  const pageStr = interaction.customId.replace('predictgw_page', '');
+  const page = parseInt(pageStr);
+  const session = gwSessions.get(interaction.user.id);
+
+  if (!session) {
+    return interaction.reply({ embeds: [errorEmbed('Session expired. Please run `/predictgw` again.')], ephemeral: true });
+  }
+
+  const { matches } = session;
+  const start = page * 5;
+  const pageMatches = matches.slice(start, start + 5);
+
+  // Parse and save each input
+  for (const m of pageMatches) {
+    const raw = interaction.fields.getTextInputValue(`match_${m.id}`).trim();
+    if (!raw) continue; // skip empty optional inputs
+
+    const parts = raw.split('-');
+    if (parts.length !== 2) {
+      session.failed.push(`${m.home_team} vs ${m.away_team} (invalid format: "${raw}")`);
+      continue;
+    }
+    const homeScore = parseInt(parts[0]);
+    const awayScore = parseInt(parts[1]);
+    if (isNaN(homeScore) || isNaN(awayScore) || homeScore < 0 || awayScore < 0) {
+      session.failed.push(`${m.home_team} vs ${m.away_team} (invalid scores: "${raw}")`);
+      continue;
+    }
+
+    // Re-check match is still open
+    const fresh = await db.getMatch(m.id);
+    if (!fresh || fresh.locked || fresh.home_score !== null) {
+      session.failed.push(`${m.home_team} vs ${m.away_team} (match now locked)`);
+      continue;
+    }
+
+    await db.upsertPrediction(interaction.user.id, interaction.user.username, m.id, homeScore, awayScore);
+    session.saved.push(`${m.home_team} ${homeScore}–${awayScore} ${m.away_team}`);
+  }
+
+  const nextPage = page + 1;
+  const hasMore = nextPage * 5 < matches.length;
+
+  if (hasMore) {
+    // Open next modal page
+    session.page = nextPage;
+    return showGWModal(interaction, interaction.user.id, nextPage);
+  }
+
+  // All done — show summary
+  gwSessions.delete(interaction.user.id);
+
+  const savedLines = session.saved.length > 0
+    ? session.saved.map(s => `✅ ${s}`).join('\n')
+    : 'None';
+  const failedLines = session.failed.length > 0
+    ? session.failed.map(s => `❌ ${s}`).join('\n')
+    : null;
+
+  const embed = new EmbedBuilder()
+    .setColor(session.saved.length > 0 ? 0x57f287 : 0xed4245)
+    .setTitle('⚽ Gameweek Predictions Saved!')
+    .addFields({ name: `✅ Saved (${session.saved.length})`, value: savedLines });
+
+  if (failedLines) {
+    embed.addFields({ name: `❌ Failed (${session.failed.length})`, value: failedLines });
+  }
+
+  embed.setFooter({ text: 'Use /predictgw again to update any predictions before kickoff.' });
 
   return interaction.reply({ embeds: [embed], ephemeral: true });
 }

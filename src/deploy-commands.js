@@ -12,6 +12,10 @@ const commands = [
     )),
 
   new SlashCommandBuilder()
+    .setName('predictgw')
+    .setDescription('Quickly predict all matches in the next open Premier League gameweek'),
+
+  new SlashCommandBuilder()
     .setName('matches')
     .setDescription('View upcoming matches')
     .addStringOption(o => o.setName('competition').setDescription('Filter by competition').addChoices(
@@ -58,7 +62,7 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName('profile')
-    .setDescription('View your stats or another player\'s')
+    .setDescription("View your stats or another player's")
     .addUserOption(o => o.setName('user').setDescription('User to view (leave blank for yourself)')),
 
   new SlashCommandBuilder()
