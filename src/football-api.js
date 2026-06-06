@@ -22,6 +22,11 @@ async function syncFixtures(competitionName) {
 
   let count = 0;
   for (const match of data.matches || []) {
+    // Skip fixtures with missing team names (e.g. WC placeholders like "Winner Group A")
+    const homeName = match.homeTeam?.name;
+    const awayName = match.awayTeam?.name;
+    if (!homeName || !awayName) continue;
+
     const kickoffTs = Math.floor(new Date(match.utcDate).getTime() / 1000);
     const date = new Date(match.utcDate).toLocaleString('en-GB', {
       day: '2-digit', month: 'short', year: 'numeric',
@@ -32,7 +37,7 @@ async function syncFixtures(competitionName) {
       `INSERT INTO matches (competition, home_team, away_team, match_date, api_id, gameweek, kickoff_ts)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT(api_id) DO UPDATE SET match_date = EXCLUDED.match_date, kickoff_ts = EXCLUDED.kickoff_ts`,
-      [competitionName, match.homeTeam.name, match.awayTeam.name, date, String(match.id), gameweek, kickoffTs]
+      [competitionName, homeName, awayName, date, String(match.id), gameweek, kickoffTs]
     );
     count++;
   }

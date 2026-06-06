@@ -27,7 +27,6 @@ async function getAnnouncementChannel() {
 }
 
 // ── In-memory store for predictgw sessions ────────────────────
-// Key: userId, Value: { matches, page, savedPredictions }
 const gwSessions = new Map();
 
 // ── Command router ────────────────────────────────────────────
@@ -192,7 +191,6 @@ async function handlePredictScoreSubmit(interaction) {
 // ── /predictgw ────────────────────────────────────────────────
 
 async function handlePredictGW(interaction) {
-  // Try gameweek-based competition first (PL), then fall back to date-based (World Cup etc.)
   let matches = [];
   let groupLabel = '';
 
@@ -236,32 +234,41 @@ async function handlePredictGW(interaction) {
     return interaction.reply({ embeds: [errorEmbed('No open fixtures found. Check back later or use `/sync`.')], ephemeral: true });
   }
 
-  // Store session (include groupLabel for modal title)
-  gwSessions.set(interaction.user.id, { matches, page: 0, saved: [], failed: [], groupLabel });
+  // Pre-fetch all existing predictions BEFORE opening the modal
+  // This must happen before showModal() to avoid the 3-second interaction timeout
+  const existingPreds = {};
+  for (const m of matches.slice(0, 5)) {
+    const pred = await db.getUserPrediction(interaction.user.id, m.id);
+    if (pred) existingPreds[m.id] = pred;
+  }
 
-  // Open modal for matches 1-5 (page 0)
+  // Store session with pre-fetched predictions
+  gwSessions.set(interaction.user.id, { matches, page: 0, saved: [], failed: [], groupLabel, existingPreds });
+
+  // Build and show modal synchronously (no async calls after this)
   return showGWModal(interaction, interaction.user.id, 0);
 }
 
 // ── predictgw: build and show modal for a page ────────────────
+// NOTE: existingPreds must already be in session — no async DB calls here
 
-async function showGWModal(interaction, userId, page) {
+function showGWModal(interaction, userId, page) {
   const session = gwSessions.get(userId);
-  if (!session) return;
+  if (!session) return interaction.reply({ embeds: [errorEmbed('Session expired. Please run `/predictgw` again.')], ephemeral: true });
 
-  const { matches } = session;
+  const { matches, groupLabel, existingPreds } = session;
   const start = page * 5;
   const pageMatches = matches.slice(start, start + 5);
   const isLastPage = start + 5 >= matches.length;
   const totalPages = Math.ceil(matches.length / 5);
 
-  const title = `${session.groupLabel || 'Predictions'} (${page + 1}/${totalPages})`;
+  const title = `${groupLabel || 'Predictions'} (${page + 1}/${totalPages})`;
   const modal = new ModalBuilder()
     .setCustomId(`predictgw_page${page}`)
     .setTitle(title.length > 45 ? title.substring(0, 42) + '...' : title);
 
   for (const m of pageMatches) {
-    const existing = await db.getUserPrediction(userId, m.id);
+    const existing = existingPreds[m.id];
     const label = `${m.home_team} vs ${m.away_team}`;
     const input = new TextInputBuilder()
       .setCustomId(`match_${m.id}`)
@@ -270,7 +277,7 @@ async function showGWModal(interaction, userId, page) {
       .setPlaceholder('e.g. 2-1')
       .setMinLength(3)
       .setMaxLength(7)
-      .setRequired(!isLastPage); // last page inputs optional if partial gw
+      .setRequired(!isLastPage);
 
     if (existing) input.setValue(`${existing.home_score}-${existing.away_score}`);
     modal.addComponents(new ActionRowBuilder().addComponents(input));
@@ -297,7 +304,7 @@ async function handlePredictGWModalSubmit(interaction) {
   // Parse and save each input
   for (const m of pageMatches) {
     const raw = interaction.fields.getTextInputValue(`match_${m.id}`).trim();
-    if (!raw) continue; // skip empty optional inputs
+    if (!raw) continue;
 
     const parts = raw.split('-');
     if (parts.length !== 2) {
@@ -311,7 +318,6 @@ async function handlePredictGWModalSubmit(interaction) {
       continue;
     }
 
-    // Re-check match is still open
     const fresh = await db.getMatch(m.id);
     if (!fresh || fresh.locked || fresh.home_score !== null) {
       session.failed.push(`${m.home_team} vs ${m.away_team} (match now locked)`);
@@ -326,8 +332,15 @@ async function handlePredictGWModalSubmit(interaction) {
   const hasMore = nextPage * 5 < matches.length;
 
   if (hasMore) {
-    // Open next modal page
+    // Pre-fetch existing predictions for next page before showing modal
+    const nextStart = nextPage * 5;
+    const nextPageMatches = matches.slice(nextStart, nextStart + 5);
+    for (const m of nextPageMatches) {
+      const pred = await db.getUserPrediction(interaction.user.id, m.id);
+      if (pred) session.existingPreds[m.id] = pred;
+    }
     session.page = nextPage;
+    // showModal must be called synchronously after the awaits above
     return showGWModal(interaction, interaction.user.id, nextPage);
   }
 
