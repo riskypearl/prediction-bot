@@ -128,6 +128,11 @@ const commands = [
     .setName('remindmissing')
     .setDescription('[ADMIN] Show users who have not predicted all matches in the current open set'),
 
+  new SlashCommandBuilder()
+    .setName('serversettings')
+    .setDescription('[ADMIN] Configure server-wide bot settings')
+    .addBooleanOption(o => o.setName('remindmissing_dms').setDescription('Send DMs to missing users when /remindmissing is run').setRequired(true)),
+
 ].map(c => c.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);

@@ -67,6 +67,7 @@ client.on('interactionCreate', async (interaction) => {
       case 'admincheck':       return await handleAdminCheck(interaction);
       case 'audit':            return await handleAudit(interaction);
       case 'remindmissing':    return await handleRemindMissing(interaction);
+      case 'serversettings':   return await handleServerSettings(interaction);
     }
   } catch (err) {
     console.error(`Error in /${interaction.commandName}:`, err);
@@ -825,7 +826,6 @@ async function handleRemindMissing(interaction) {
 
   const matchIds = matches.map(m => m.id);
 
-  // All users who have made at least one prediction ever
   const allUsers = await db.query(
     `SELECT DISTINCT user_id, username FROM predictions ORDER BY username ASC`
   );
@@ -834,7 +834,6 @@ async function handleRemindMissing(interaction) {
     return interaction.editReply({ embeds: [errorEmbed('No users have made any predictions yet.')] });
   }
 
-  // For each user, count how many of the current GW matches they've predicted
   const missing = [];
   for (const user of allUsers) {
     const rows = await db.query(
@@ -844,7 +843,7 @@ async function handleRemindMissing(interaction) {
     const predicted = parseInt(rows[0]?.c ?? 0);
     const remaining = matchIds.length - predicted;
     if (remaining > 0) {
-      missing.push({ username: user.username, remaining });
+      missing.push({ userId: user.user_id, username: user.username, remaining });
     }
   }
 
@@ -852,13 +851,62 @@ async function handleRemindMissing(interaction) {
     return interaction.editReply({ embeds: [successEmbed(`✅ All users have predicted every match in **${label}**!`)] });
   }
 
-  const lines = missing.map(u => `**${u.username}** — ${u.remaining} prediction${u.remaining > 1 ? 's' : ''} missing`);
+  const dmsEnabled = (await db.getSetting('remindmissing_dms')) === 'true';
+
+  if (!dmsEnabled) {
+    const lines = missing.map(u => `**${u.username}** — ${u.remaining} prediction${u.remaining > 1 ? 's' : ''} missing`);
+    const embed = new EmbedBuilder()
+      .setColor(0xfee75c)
+      .setTitle(`⚠️ Missing Predictions — ${label}`)
+      .setDescription(lines.join('\n'))
+      .setFooter({ text: `${missing.length} user(s) incomplete · ${matchIds.length} matches in this set · DMs disabled` });
+    return interaction.editReply({ embeds: [embed] });
+  }
+
+  // DMs enabled — attempt to DM each missing user
+  const dmd = [], failed = [];
+  for (const user of missing) {
+    try {
+      const discordUser = await client.users.fetch(user.userId);
+      await discordUser.send(
+        `⚽ **Prediction reminder — ${label}**\nYou still have **${user.remaining} prediction${user.remaining > 1 ? 's' : ''}** to submit. Use \`/predictgw\` to fill them in before kickoff!`
+      );
+      dmd.push(user.username);
+    } catch {
+      failed.push(user.username);
+    }
+  }
+
+  const lines = [];
+  if (dmd.length > 0)    lines.push(`**✅ DM'd (${dmd.length}):**\n${dmd.map(u => `• ${u}`).join('\n')}`);
+  if (failed.length > 0) lines.push(`**❌ Could not DM (${failed.length}):**\n${failed.map(u => `• ${u}`).join('\n')}`);
 
   const embed = new EmbedBuilder()
-    .setColor(0xfee75c)
-    .setTitle(`⚠️ Missing Predictions — ${label}`)
-    .setDescription(lines.join('\n'))
-    .setFooter({ text: `${missing.length} user(s) incomplete · ${matchIds.length} matches in this set` });
+    .setColor(dmd.length > 0 ? 0x57f287 : 0xed4245)
+    .setTitle(`📬 Reminders Sent — ${label}`)
+    .setDescription(lines.join('\n\n'))
+    .setFooter({ text: `${matchIds.length} matches in this set` });
+
+  return interaction.editReply({ embeds: [embed] });
+}
+
+// ── /serversettings (admin) ───────────────────────────────────
+
+async function handleServerSettings(interaction) {
+  if (!isAdmin(interaction)) return interaction.reply({ embeds: [errorEmbed('No permission.')], ephemeral: true });
+  await interaction.deferReply({ ephemeral: true });
+
+  const dmsEnabled = interaction.options.getBoolean('remindmissing_dms');
+
+  await db.setSetting('remindmissing_dms', String(dmsEnabled));
+
+  const embed = new EmbedBuilder()
+    .setColor(0x57f287)
+    .setTitle('⚙️ Server Settings Updated')
+    .addFields(
+      { name: '📬 /remindmissing DMs', value: dmsEnabled ? '✅ Enabled — missing users will be DM\'d' : '❌ Disabled — admin report only', inline: false },
+    )
+    .setFooter({ text: 'Run /serversettings again to change.' });
 
   return interaction.editReply({ embeds: [embed] });
 }
