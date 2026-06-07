@@ -118,6 +118,16 @@ const commands = [
     .setName('admincheck')
     .setDescription('[ADMIN] Check bot/database status'),
 
+  new SlashCommandBuilder()
+    .setName('audit')
+    .setDescription('[ADMIN] View recent prediction audit log entries')
+    .addUserOption(o => o.setName('user').setDescription('Filter by user (optional)'))
+    .addIntegerOption(o => o.setName('match_id').setDescription('Filter by match ID (optional)')),
+
+  new SlashCommandBuilder()
+    .setName('remindmissing')
+    .setDescription('[ADMIN] Show users who have not predicted all matches in the current open set'),
+
 ].map(c => c.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);

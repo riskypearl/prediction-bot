@@ -65,6 +65,8 @@ client.on('interactionCreate', async (interaction) => {
       case 'setchannel':       return await handleSetChannel(interaction);
       case 'sync':             return await handleSync(interaction);
       case 'admincheck':       return await handleAdminCheck(interaction);
+      case 'audit':            return await handleAudit(interaction);
+      case 'remindmissing':    return await handleRemindMissing(interaction);
     }
   } catch (err) {
     console.error(`Error in /${interaction.commandName}:`, err);
@@ -750,7 +752,7 @@ async function handleAdminCheck(interaction) {
       db.queryOne(`SELECT COUNT(*) as c FROM matches WHERE home_score IS NULL AND locked = 0`),
       db.queryOne(`SELECT COUNT(*) as c FROM matches WHERE locked = 1`),
       db.queryOne(`SELECT COUNT(*) as c FROM predictions`),
-      db.queryOne(`SELECT COUNT(*) as c FROM user_stats`),
+      db.queryOne(`SELECT COUNT(DISTINCT user_id) as c FROM predictions`),
     ]);
     upcomingCount     = parseInt(upcoming?.c  ?? 0);
     lockedCount       = parseInt(locked?.c    ?? 0);
@@ -774,6 +776,89 @@ async function handleAdminCheck(interaction) {
       { name: '🔄 Last Sync',          value: lastSync ?? 'Never',                        inline: true },
     )
     .setTimestamp();
+
+  return interaction.editReply({ embeds: [embed] });
+}
+
+// ── /audit (admin) ────────────────────────────────────────────
+
+async function handleAudit(interaction) {
+  if (!isAdmin(interaction)) return interaction.reply({ embeds: [errorEmbed('No permission.')], ephemeral: true });
+  await interaction.deferReply({ ephemeral: true });
+
+  const targetUser = interaction.options.getUser('user');
+  const matchId    = interaction.options.getInteger('match_id');
+
+  const rows = await db.getRecentAuditLog(targetUser?.id ?? null, matchId ?? null);
+
+  if (rows.length === 0) {
+    return interaction.editReply({ embeds: [errorEmbed('No audit log entries found.')] });
+  }
+
+  const lines = rows.map(r => {
+    const oldScore = r.old_home_score !== null ? `${r.old_home_score}–${r.old_away_score}` : 'new';
+    const newScore = `${r.new_home_score}–${r.new_away_score}`;
+    const arrow = r.old_home_score !== null ? `${oldScore} → ${newScore}` : `➕ ${newScore}`;
+    return `**${r.username}** · ${r.home_team} vs ${r.away_team}\n${arrow} · <t:${Math.floor(new Date(r.changed_at).getTime() / 1000)}:R>`;
+  });
+
+  const embed = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle('🔍 Prediction Audit Log')
+    .setDescription(lines.join('\n\n'))
+    .setFooter({ text: `Showing last ${rows.length} entries` });
+
+  return interaction.editReply({ embeds: [embed] });
+}
+
+// ── /remindmissing (admin) ────────────────────────────────────
+
+async function handleRemindMissing(interaction) {
+  if (!isAdmin(interaction)) return interaction.reply({ embeds: [errorEmbed('No permission.')], ephemeral: true });
+  await interaction.deferReply({ ephemeral: true });
+
+  const { matches, label } = await db.getCurrentGWMatches();
+
+  if (matches.length === 0) {
+    return interaction.editReply({ embeds: [errorEmbed('No open fixtures found.')] });
+  }
+
+  const matchIds = matches.map(m => m.id);
+
+  // All users who have made at least one prediction ever
+  const allUsers = await db.query(
+    `SELECT DISTINCT user_id, username FROM predictions ORDER BY username ASC`
+  );
+
+  if (allUsers.length === 0) {
+    return interaction.editReply({ embeds: [errorEmbed('No users have made any predictions yet.')] });
+  }
+
+  // For each user, count how many of the current GW matches they've predicted
+  const missing = [];
+  for (const user of allUsers) {
+    const rows = await db.query(
+      `SELECT COUNT(*) as c FROM predictions WHERE user_id = $1 AND match_id = ANY($2::int[])`,
+      [user.user_id, matchIds]
+    );
+    const predicted = parseInt(rows[0]?.c ?? 0);
+    const remaining = matchIds.length - predicted;
+    if (remaining > 0) {
+      missing.push({ username: user.username, remaining });
+    }
+  }
+
+  if (missing.length === 0) {
+    return interaction.editReply({ embeds: [successEmbed(`✅ All users have predicted every match in **${label}**!`)] });
+  }
+
+  const lines = missing.map(u => `**${u.username}** — ${u.remaining} prediction${u.remaining > 1 ? 's' : ''} missing`);
+
+  const embed = new EmbedBuilder()
+    .setColor(0xfee75c)
+    .setTitle(`⚠️ Missing Predictions — ${label}`)
+    .setDescription(lines.join('\n'))
+    .setFooter({ text: `${missing.length} user(s) incomplete · ${matchIds.length} matches in this set` });
 
   return interaction.editReply({ embeds: [embed] });
 }

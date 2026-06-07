@@ -196,6 +196,69 @@ async function upsertPredictionWithAudit(userId, username, matchId, homeScore, a
   );
 }
 
+async function getRecentAuditLog(userId = null, matchId = null) {
+  if (userId && matchId) {
+    return query(
+      `SELECT a.*, m.home_team, m.away_team FROM prediction_audit_log a
+       JOIN matches m ON a.match_id = m.id
+       WHERE a.user_id = $1 AND a.match_id = $2
+       ORDER BY a.changed_at DESC LIMIT 10`,
+      [userId, matchId]
+    );
+  } else if (userId) {
+    return query(
+      `SELECT a.*, m.home_team, m.away_team FROM prediction_audit_log a
+       JOIN matches m ON a.match_id = m.id
+       WHERE a.user_id = $1
+       ORDER BY a.changed_at DESC LIMIT 10`,
+      [userId]
+    );
+  } else if (matchId) {
+    return query(
+      `SELECT a.*, m.home_team, m.away_team FROM prediction_audit_log a
+       JOIN matches m ON a.match_id = m.id
+       WHERE a.match_id = $1
+       ORDER BY a.changed_at DESC LIMIT 10`,
+      [matchId]
+    );
+  }
+  return query(
+    `SELECT a.*, m.home_team, m.away_team FROM prediction_audit_log a
+     JOIN matches m ON a.match_id = m.id
+     ORDER BY a.changed_at DESC LIMIT 10`
+  );
+}
+
+async function getCurrentGWMatches() {
+  const gwRows = await query(
+    `SELECT DISTINCT competition, gameweek FROM matches
+     WHERE gameweek IS NOT NULL AND home_score IS NULL AND locked = 0
+     ORDER BY gameweek ASC LIMIT 1`
+  );
+  if (gwRows.length > 0) {
+    const { competition, gameweek } = gwRows[0];
+    const matches = await query(
+      `SELECT * FROM matches WHERE gameweek = $1 AND competition = $2 AND home_score IS NULL AND locked = 0 ORDER BY match_date ASC`,
+      [gameweek, competition]
+    );
+    return { matches, label: `GW${gameweek} · ${competition}` };
+  }
+  const dateRows = await query(
+    `SELECT DISTINCT match_date FROM matches
+     WHERE gameweek IS NULL AND home_score IS NULL AND locked = 0
+     ORDER BY match_date ASC LIMIT 1`
+  );
+  if (dateRows.length > 0) {
+    const nextDate = dateRows[0].match_date;
+    const matches = await query(
+      `SELECT * FROM matches WHERE match_date LIKE $1 AND home_score IS NULL AND locked = 0 ORDER BY match_date ASC`,
+      [`${nextDate}%`]
+    );
+    return { matches, label: nextDate };
+  }
+  return { matches: [], label: '' };
+}
+
 async function getUserPrediction(userId, matchId) {
   return queryOne(
     `SELECT * FROM predictions WHERE user_id = $1 AND match_id = $2`,
@@ -372,7 +435,7 @@ async function setSetting(key, value) {
 module.exports = {
   db, query, queryOne, addMatch, getMatch, getUpcomingMatches, getMatchesByGameweek, getMatchesByDate,
   getUnlockedPastMatches, lockMatch, setResult, upsertPrediction, upsertPredictionWithAudit,
-  logPredictionAudit, getUserPrediction,
+  logPredictionAudit, getUserPrediction, getRecentAuditLog, getCurrentGWMatches,
   getPredictionsForMatch, getLeaderboard, getGameweekLeaderboard, getDayLeaderboard,
   getUserProfile, getH2H, getSetting, setSetting, calcPoints,
 };
