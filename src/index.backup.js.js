@@ -64,7 +64,6 @@ client.on('interactionCreate', async (interaction) => {
       case 'matchpredictions': return await handleMatchPredictions(interaction);
       case 'setchannel':       return await handleSetChannel(interaction);
       case 'sync':             return await handleSync(interaction);
-      case 'admincheck':       return await handleAdminCheck(interaction);
     }
   } catch (err) {
     console.error(`Error in /${interaction.commandName}:`, err);
@@ -736,48 +735,6 @@ async function handleSync(interaction) {
   }
 }
 
-// ── /admincheck (admin) ───────────────────────────────────────
-
-async function handleAdminCheck(interaction) {
-  if (!isAdmin(interaction)) return interaction.reply({ embeds: [errorEmbed('No permission.')], ephemeral: true });
-  await interaction.deferReply({ ephemeral: true });
-
-  let dbConnected = true;
-  let upcomingCount = 0, lockedCount = 0, predictionsCount = 0, usersCount = 0;
-
-  try {
-    const [upcoming, locked, predictions, users] = await Promise.all([
-      db.queryOne(`SELECT COUNT(*) as c FROM matches WHERE home_score IS NULL AND locked = 0`),
-      db.queryOne(`SELECT COUNT(*) as c FROM matches WHERE locked = 1`),
-      db.queryOne(`SELECT COUNT(*) as c FROM predictions`),
-      db.queryOne(`SELECT COUNT(*) as c FROM user_stats`),
-    ]);
-    upcomingCount     = parseInt(upcoming?.c  ?? 0);
-    lockedCount       = parseInt(locked?.c    ?? 0);
-    predictionsCount  = parseInt(predictions?.c ?? 0);
-    usersCount        = parseInt(users?.c     ?? 0);
-  } catch {
-    dbConnected = false;
-  }
-
-  const lastSync = await db.getSetting('last_sync').catch(() => null);
-
-  const embed = new EmbedBuilder()
-    .setColor(dbConnected ? 0x57f287 : 0xed4245)
-    .setTitle('🛠️ Admin System Check')
-    .addFields(
-      { name: '🗄️ Database',          value: dbConnected ? '✅ Connected' : '❌ Error',  inline: true },
-      { name: '📅 Upcoming Matches',   value: String(upcomingCount),                      inline: true },
-      { name: '🔒 Locked Matches',     value: String(lockedCount),                        inline: true },
-      { name: '📋 Total Predictions',  value: String(predictionsCount),                   inline: true },
-      { name: '👥 Users',              value: String(usersCount),                         inline: true },
-      { name: '🔄 Last Sync',          value: lastSync ?? 'Never',                        inline: true },
-    )
-    .setTimestamp();
-
-  return interaction.editReply({ embeds: [embed] });
-}
-
 // ── Auto-lock matches at kickoff ──────────────────────────────
 
 async function autoLockMatches() {
@@ -802,13 +759,14 @@ async function autoSync() {
   try {
     console.log('🔄 Auto-syncing...');
     const results = await api.syncAll();
-    await db.setSetting('last_sync', new Date().toUTCString());
+
     for (const [comp, r] of Object.entries(results)) {
       if (r.error) {
         console.error(`  ❌ ${comp}: ${r.error}`);
         continue;
       }
       console.log(`  ✅ ${comp}: ${r.fixtures} fixtures, ${r.scored} scored`);
+
       if (r.scoredMatches && r.scoredMatches.length > 0) {
         const channel = await getAnnouncementChannel();
 

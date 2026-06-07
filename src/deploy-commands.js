@@ -114,6 +114,10 @@ const commands = [
     .setName('sync')
     .setDescription('[ADMIN] Sync fixtures and results from the API'),
 
+  new SlashCommandBuilder()
+    .setName('admincheck')
+    .setDescription('[ADMIN] Check bot/database status'),
+
 ].map(c => c.toJSON());
 
 const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
