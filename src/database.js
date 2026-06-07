@@ -55,6 +55,18 @@ async function init() {
       key TEXT PRIMARY KEY,
       value TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS prediction_audit_log (
+      id SERIAL PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      username TEXT NOT NULL,
+      match_id INTEGER NOT NULL,
+      old_home_score INTEGER DEFAULT NULL,
+      old_away_score INTEGER DEFAULT NULL,
+      new_home_score INTEGER NOT NULL,
+      new_away_score INTEGER NOT NULL,
+      changed_at TEXT DEFAULT (NOW()::TEXT)
+    );
   `);
 }
 
@@ -162,6 +174,25 @@ async function upsertPrediction(userId, username, matchId, homeScore, awayScore)
        away_score = EXCLUDED.away_score,
        points = NULL`,
     [userId, username, matchId, homeScore, awayScore]
+  );
+}
+
+async function logPredictionAudit(userId, username, matchId, oldHomeScore, oldAwayScore, newHomeScore, newAwayScore) {
+  await execute(
+    `INSERT INTO prediction_audit_log (user_id, username, match_id, old_home_score, old_away_score, new_home_score, new_away_score)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [userId, username, matchId, oldHomeScore ?? null, oldAwayScore ?? null, newHomeScore, newAwayScore]
+  );
+}
+
+async function upsertPredictionWithAudit(userId, username, matchId, homeScore, awayScore) {
+  const existing = await getUserPrediction(userId, matchId);
+  await upsertPrediction(userId, username, matchId, homeScore, awayScore);
+  await logPredictionAudit(
+    userId, username, matchId,
+    existing ? existing.home_score : null,
+    existing ? existing.away_score : null,
+    homeScore, awayScore
   );
 }
 
@@ -340,7 +371,8 @@ async function setSetting(key, value) {
 
 module.exports = {
   db, query, queryOne, addMatch, getMatch, getUpcomingMatches, getMatchesByGameweek, getMatchesByDate,
-  getUnlockedPastMatches, lockMatch, setResult, upsertPrediction, getUserPrediction,
+  getUnlockedPastMatches, lockMatch, setResult, upsertPrediction, upsertPredictionWithAudit,
+  logPredictionAudit, getUserPrediction,
   getPredictionsForMatch, getLeaderboard, getGameweekLeaderboard, getDayLeaderboard,
   getUserProfile, getH2H, getSetting, setSetting, calcPoints,
 };

@@ -176,7 +176,7 @@ async function handlePredictScoreSubmit(interaction) {
     return interaction.reply({ embeds: [errorEmbed('This match is no longer available.')], ephemeral: true });
   }
 
-  await db.upsertPrediction(interaction.user.id, interaction.user.username, matchId, homeScore, awayScore);
+  await db.upsertPredictionWithAudit(interaction.user.id, interaction.user.username, matchId, homeScore, awayScore);
 
   const gw = match.gameweek ? ` · GW${match.gameweek}` : '';
   const embed = new EmbedBuilder()
@@ -313,7 +313,7 @@ async function handlePredictGWModalSubmit(interaction) {
       continue;
     }
 
-    await db.upsertPrediction(interaction.user.id, interaction.user.username, m.id, homeScore, awayScore);
+    await db.upsertPredictionWithAudit(interaction.user.id, interaction.user.username, m.id, homeScore, awayScore);
     session.saved.push(`${m.home_team} ${homeScore}–${awayScore} ${m.away_team}`);
   }
 
