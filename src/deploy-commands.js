@@ -121,6 +121,11 @@ const commands = [
   new SlashCommandBuilder()
     .setName('audit')
     .setDescription('[ADMIN] View recent prediction audit log entries')
+    .addStringOption(o => o.setName('filter').setDescription('Filter type').addChoices(
+      { name: 'Recent (last 10)', value: 'recent' },
+      { name: 'By user', value: 'user' },
+      { name: 'By match', value: 'match' },
+    ))
     .addUserOption(o => o.setName('user').setDescription('Filter by user (optional)'))
     .addIntegerOption(o => o.setName('match_id').setDescription('Filter by match ID (optional)')),
 
@@ -130,8 +135,21 @@ const commands = [
 
   new SlashCommandBuilder()
     .setName('serversettings')
-    .setDescription('[ADMIN] Configure server-wide bot settings')
-    .addBooleanOption(o => o.setName('remindmissing_dms').setDescription('Send DMs to missing users when /remindmissing is run').setRequired(true)),
+    .setDescription('[ADMIN] Configure server-wide bot settings (no options = view current)')
+    .addStringOption(o => o.setName('reminder_window').setDescription('Automatic reminder timing').addChoices(
+      { name: 'Off',               value: 'off'  },
+      { name: '24 hours before lock', value: '24h' },
+      { name: '12 hours before lock', value: '12h' },
+      { name: '6 hours before lock',  value: '6h'  },
+      { name: '3 hours before lock',  value: '3h'  },
+      { name: '1 hour before lock',   value: '1h'  },
+    ))
+    .addBooleanOption(o => o.setName('remindmissing_dms').setDescription('Send DMs to missing users when /remindmissing or auto-reminder fires'))
+    .addStringOption(o => o.setName('reveal_predictions').setDescription('When to reveal predictions to users').addChoices(
+      { name: 'After lock',    value: 'after_lock'    },
+      { name: 'After results', value: 'after_results' },
+      { name: 'Never',         value: 'never'         },
+    )),
 
 ].map(c => c.toJSON());
 

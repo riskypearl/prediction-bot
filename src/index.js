@@ -13,6 +13,7 @@ client.once('ready', () => {
     autoSync();
     setInterval(autoSync, 30 * 60 * 1000);
     setInterval(autoLockMatches, 60 * 1000);
+    setInterval(autoReminder, 5 * 60 * 1000); // check every 5 minutes
   }, 5000);
 });
 
@@ -696,6 +697,18 @@ async function handleMatchPredictions(interaction) {
   const matchId = interaction.options.getInteger('match_id');
   const match   = await db.getMatch(matchId);
   if (!match) return interaction.reply({ embeds: [errorEmbed(`Match #${matchId} not found.`)], ephemeral: true });
+
+  const revealSetting = (await db.getSetting('reveal_predictions')) ?? 'after_lock';
+  const isLocked  = match.locked;
+  const hasResult = match.home_score !== null;
+
+  let canReveal = false;
+  if (revealSetting === 'after_lock'    && isLocked)  canReveal = true;
+  if (revealSetting === 'after_results' && hasResult) canReveal = true;
+  if (revealSetting === 'never')                      canReveal = false;
+  // Admins always see predictions
+  canReveal = true;
+
   const preds = await db.getPredictionsForMatch(matchId);
   if (preds.length === 0) return interaction.reply({ embeds: [errorEmbed('No predictions yet.')], ephemeral: true });
 
@@ -705,11 +718,12 @@ async function handleMatchPredictions(interaction) {
     return `**${p.username}**: ${p.home_score}–${p.away_score}${pts}`;
   });
 
-  const result = match.home_score !== null ? `Result: **${match.home_score}–${match.away_score}**` : 'Result: Pending';
+  const result = hasResult ? `Result: **${match.home_score}–${match.away_score}**` : 'Result: Pending';
+  const revealLabel = { after_lock: 'After lock', after_results: 'After results', never: 'Never' }[revealSetting] ?? revealSetting;
   const embed = new EmbedBuilder().setColor(0x5865f2)
     .setTitle(`📋 Predictions — #${matchId} ${match.home_team} vs ${match.away_team}`)
     .setDescription(`${result}\n\n${lines.join('\n')}`)
-    .setFooter({ text: `${preds.length} prediction(s)` });
+    .setFooter({ text: `${preds.length} prediction(s) · Reveal setting: ${revealLabel}` });
   return interaction.reply({ embeds: [embed], ephemeral: true });
 }
 
@@ -787,9 +801,11 @@ async function handleAudit(interaction) {
   if (!isAdmin(interaction)) return interaction.reply({ embeds: [errorEmbed('No permission.')], ephemeral: true });
   await interaction.deferReply({ ephemeral: true });
 
+  const filter    = interaction.options.getString('filter') || 'recent';
   const targetUser = interaction.options.getUser('user');
-  const matchId    = interaction.options.getInteger('match_id');
+  const matchId   = interaction.options.getInteger('match_id');
 
+  // filter='recent' shows last 10 regardless; user/match_id narrow it down
   const rows = await db.getRecentAuditLog(targetUser?.id ?? null, matchId ?? null);
 
   if (rows.length === 0) {
@@ -797,15 +813,18 @@ async function handleAudit(interaction) {
   }
 
   const lines = rows.map(r => {
-    const oldScore = r.old_home_score !== null ? `${r.old_home_score}–${r.old_away_score}` : 'new';
+    const isNew   = r.old_home_score === null;
+    const oldScore = isNew ? '—' : `${r.old_home_score}–${r.old_away_score}`;
     const newScore = `${r.new_home_score}–${r.new_away_score}`;
-    const arrow = r.old_home_score !== null ? `${oldScore} → ${newScore}` : `➕ ${newScore}`;
-    return `**${r.username}** · ${r.home_team} vs ${r.away_team}\n${arrow} · <t:${Math.floor(new Date(r.changed_at).getTime() / 1000)}:R>`;
+    const change  = isNew ? `➕ **${newScore}** *(new)*` : `**${oldScore}** → **${newScore}**`;
+    const ts = Math.floor(new Date(r.changed_at).getTime() / 1000);
+    return `**${r.username}** · ${r.home_team} vs ${r.away_team}\n${change} · <t:${ts}:R>`;
   });
 
+  const filterLabel = targetUser ? ` · ${targetUser.username}` : matchId ? ` · Match #${matchId}` : '';
   const embed = new EmbedBuilder()
     .setColor(0x5865f2)
-    .setTitle('🔍 Prediction Audit Log')
+    .setTitle(`🔍 Prediction Audit Log${filterLabel}`)
     .setDescription(lines.join('\n\n'))
     .setFooter({ text: `Showing last ${rows.length} entries` });
 
@@ -896,19 +915,136 @@ async function handleServerSettings(interaction) {
   if (!isAdmin(interaction)) return interaction.reply({ embeds: [errorEmbed('No permission.')], ephemeral: true });
   await interaction.deferReply({ ephemeral: true });
 
-  const dmsEnabled = interaction.options.getBoolean('remindmissing_dms');
+  const reminderWindow   = interaction.options.getString('reminder_window');
+  const dmsEnabled       = interaction.options.getBoolean('remindmissing_dms');
+  const revealPredictions = interaction.options.getString('reveal_predictions');
 
-  await db.setSetting('remindmissing_dms', String(dmsEnabled));
+  const updates = [];
+
+  if (reminderWindow !== null) {
+    await db.setSetting('reminder_window', reminderWindow);
+    const label = { off: 'Off', '24h': '24 hours before lock', '12h': '12 hours before lock', '6h': '6 hours before lock', '3h': '3 hours before lock', '1h': '1 hour before lock' }[reminderWindow] ?? reminderWindow;
+    updates.push({ name: '⏰ Auto Reminder', value: label });
+  }
+
+  if (dmsEnabled !== null) {
+    await db.setSetting('remindmissing_dms', String(dmsEnabled));
+    updates.push({ name: '📬 /remindmissing DMs', value: dmsEnabled ? '✅ Enabled' : '❌ Disabled — admin report only' });
+  }
+
+  if (revealPredictions !== null) {
+    await db.setSetting('reveal_predictions', revealPredictions);
+    const label = { after_lock: 'After lock', after_results: 'After results', never: 'Never' }[revealPredictions] ?? revealPredictions;
+    updates.push({ name: '👁️ Reveal Predictions', value: label });
+  }
+
+  if (updates.length === 0) {
+    // Show current settings
+    const [rw, dms, rp] = await Promise.all([
+      db.getSetting('reminder_window'),
+      db.getSetting('remindmissing_dms'),
+      db.getSetting('reveal_predictions'),
+    ]);
+    const rwLabel = { off: 'Off', '24h': '24h before lock', '12h': '12h before lock', '6h': '6h before lock', '3h': '3h before lock', '1h': '1h before lock' }[rw ?? 'off'] ?? 'Off';
+    const rpLabel = { after_lock: 'After lock', after_results: 'After results', never: 'Never' }[rp ?? 'after_lock'] ?? 'After lock';
+    const embed = new EmbedBuilder()
+      .setColor(0x5865f2)
+      .setTitle('⚙️ Current Server Settings')
+      .addFields(
+        { name: '⏰ Auto Reminder',       value: rwLabel,                                            inline: true },
+        { name: '📬 /remindmissing DMs',  value: dms === 'true' ? '✅ Enabled' : '❌ Disabled',     inline: true },
+        { name: '👁️ Reveal Predictions',  value: rpLabel,                                            inline: true },
+      )
+      .setFooter({ text: 'Pass options to update settings.' });
+    return interaction.editReply({ embeds: [embed] });
+  }
 
   const embed = new EmbedBuilder()
     .setColor(0x57f287)
     .setTitle('⚙️ Server Settings Updated')
-    .addFields(
-      { name: '📬 /remindmissing DMs', value: dmsEnabled ? '✅ Enabled — missing users will be DM\'d' : '❌ Disabled — admin report only', inline: false },
-    )
-    .setFooter({ text: 'Run /serversettings again to change.' });
+    .addFields(...updates.map(u => ({ name: u.name, value: u.value, inline: true })))
+    .setFooter({ text: 'Run /serversettings with no options to view all current settings.' });
 
   return interaction.editReply({ embeds: [embed] });
+}
+
+// ── Auto-reminder ─────────────────────────────────────────────
+
+// Maps reminder_window setting to seconds before kickoff_ts
+const REMINDER_OFFSETS = { '24h': 86400, '12h': 43200, '6h': 21600, '3h': 10800, '1h': 3600 };
+
+async function autoReminder() {
+  try {
+    const window = await db.getSetting('reminder_window');
+    if (!window || window === 'off') return;
+
+    const offsetSecs = REMINDER_OFFSETS[window];
+    if (!offsetSecs) return;
+
+    const { matches, label } = await db.getCurrentGWMatches();
+    if (matches.length === 0) return;
+
+    // Find the earliest kickoff_ts in the current set
+    const kickoffs = matches.map(m => m.kickoff_ts).filter(Boolean);
+    if (kickoffs.length === 0) return;
+    const earliestKickoff = Math.min(...kickoffs);
+
+    const now = Math.floor(Date.now() / 1000);
+    const triggerAt = earliestKickoff - offsetSecs;
+
+    // Only fire within the current 5-minute check window
+    if (now < triggerAt || now > triggerAt + 300) return;
+
+    // Dedup: have we already sent this reminder for this kickoff+window?
+    const dedupKey = `reminder_sent_${earliestKickoff}_${window}`;
+    const alreadySent = await db.getSetting(dedupKey);
+    if (alreadySent) return;
+    await db.setSetting(dedupKey, 'true');
+
+    // Find missing users
+    const matchIds = matches.map(m => m.id);
+    const allUsers = await db.query(`SELECT DISTINCT user_id, username FROM predictions ORDER BY username ASC`);
+    const missing = [];
+    for (const user of allUsers) {
+      const rows = await db.query(
+        `SELECT COUNT(*) as c FROM predictions WHERE user_id = $1 AND match_id = ANY($2::int[])`,
+        [user.user_id, matchIds]
+      );
+      const predicted = parseInt(rows[0]?.c ?? 0);
+      const remaining = matchIds.length - predicted;
+      if (remaining > 0) missing.push({ userId: user.user_id, username: user.username, remaining });
+    }
+
+    if (missing.length === 0) return;
+
+    const dmsEnabled = (await db.getSetting('remindmissing_dms')) === 'true';
+
+    if (dmsEnabled) {
+      for (const user of missing) {
+        try {
+          const discordUser = await client.users.fetch(user.userId);
+          await discordUser.send(
+            `⏰ **Prediction deadline reminder — ${label}**\nKickoff is in **${window.replace('h', ' hour')}**! You still have **${user.remaining} prediction${user.remaining > 1 ? 's' : ''}** to submit. Use \`/predictgw\` to fill them in now!`
+          );
+        } catch {}
+      }
+      console.log(`⏰ Auto-reminder (${window}): DM'd ${missing.length} user(s) for ${label}`);
+    }
+
+    // Always post to announcement channel as well
+    const channel = await getAnnouncementChannel();
+    if (channel) {
+      const missingList = missing.map(u => `• **${u.username}** (${u.remaining} missing)`).join('\n');
+      const embed = new EmbedBuilder()
+        .setColor(0xfee75c)
+        .setTitle(`⏰ Prediction Reminder — ${label}`)
+        .setDescription(`Kickoff is in **${window.replace('h', ' hour')}**!\n\nThe following players still have predictions to submit:\n${missingList}`)
+        .setFooter({ text: 'Use /predictgw to submit your predictions!' });
+      await channel.send({ embeds: [embed] });
+    }
+  } catch (err) {
+    console.error('Auto-reminder error:', err.message);
+  }
 }
 
 // ── Auto-lock matches at kickoff ──────────────────────────────
