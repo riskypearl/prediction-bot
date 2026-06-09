@@ -89,12 +89,10 @@ async function execute(sql, params = []) {
   return res;
 }
 
-// Expose a db-like object for raw queries used in index.js
 const db = {
   prepare: () => { throw new Error('Use async db functions instead of db.prepare()'); },
   query: (sql, params) => query(sql, params),
   queryOne: (sql, params) => queryOne(sql, params),
-  // Used in index.js: db.db.prepare(...)
   db: {
     prepare: (sql) => ({
       all: (...params) => query(sql.replace(/\?/g, (_, i) => `$${++i}`), params.flat()),
@@ -153,6 +151,10 @@ async function getUnlockedPastMatches() {
 
 async function lockMatch(matchId) {
   return execute('UPDATE matches SET locked = 1 WHERE id = $1', [matchId]);
+}
+
+async function unlockMatch(matchId) {
+  return execute('UPDATE matches SET locked = 0 WHERE id = $1', [matchId]);
 }
 
 async function setResult(matchId, homeScore, awayScore) {
@@ -434,7 +436,7 @@ async function setSetting(key, value) {
 
 module.exports = {
   db, query, queryOne, addMatch, getMatch, getUpcomingMatches, getMatchesByGameweek, getMatchesByDate,
-  getUnlockedPastMatches, lockMatch, setResult, upsertPrediction, upsertPredictionWithAudit,
+  getUnlockedPastMatches, lockMatch, unlockMatch, setResult, upsertPrediction, upsertPredictionWithAudit,
   logPredictionAudit, getUserPrediction, getRecentAuditLog, getCurrentGWMatches,
   getPredictionsForMatch, getLeaderboard, getGameweekLeaderboard, getDayLeaderboard,
   getUserProfile, getH2H, getSetting, setSetting, calcPoints,
