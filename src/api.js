@@ -216,7 +216,7 @@ function UsersPage(){
               React.createElement("td",{style:{padding:"8px 8px",color:C.purple,fontWeight:500}},u.total_points||0),
               React.createElement("td",{style:{padding:"8px 8px",color:C.text2}},u.predictions_scored||0),
               React.createElement("td",{style:{padding:"8px 8px",color:C.text2}},u.correct_results||0),
-              React.createElement("td",{style:{padding:"8px 8px",color:u.current_streak>=3?C.amber:C.text2}},(u.current_streak||0)+(u.current_streak>=3?" 🔥":""))))))));,
+              React.createElement("td",{style:{padding:"8px 8px",color:u.current_streak>=3?C.amber:C.text2}},(u.current_streak||0)+(u.current_streak>=3?" 🔥":""))))))))
     u&&React.createElement("div",{style:{...s.card,alignSelf:"start"}},
       React.createElement("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:14}},
         React.createElement("div",null,
