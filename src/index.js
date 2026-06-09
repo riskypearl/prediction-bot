@@ -3,6 +3,9 @@ const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, StringSelectM
 const db = require('./database');
 const { matchEmbed, matchListEmbed, leaderboardEmbed, profileEmbed, h2hEmbed, errorEmbed, successEmbed } = require('./embeds');
 const api = require('./football-api');
+const { startApi } = require('./api');
+
+startApi();
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
