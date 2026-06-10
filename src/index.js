@@ -3,9 +3,6 @@ const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, StringSelectM
 const db = require('./database');
 const { matchEmbed, matchListEmbed, leaderboardEmbed, profileEmbed, h2hEmbed, errorEmbed, successEmbed } = require('./embeds');
 const api = require('./football-api');
-const { startApi } = require('./api');
-
-startApi();
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
@@ -14,9 +11,11 @@ client.once('ready', () => {
   client.user.setActivity('⚽ Prediction League', { type: 3 });
   setTimeout(() => {
     autoSync();
+    db.cleanupReminderKeys(); // clean expired reminder dedup keys on startup
     setInterval(autoSync, 30 * 60 * 1000);
     setInterval(autoLockMatches, 60 * 1000);
-    setInterval(autoReminder, 5 * 60 * 1000); // check every 5 minutes
+    setInterval(autoReminder, 5 * 60 * 1000);
+    setInterval(() => db.cleanupReminderKeys(), 24 * 60 * 60 * 1000); // daily cleanup
   }, 5000);
 });
 
@@ -54,6 +53,7 @@ client.on('interactionCreate', async (interaction) => {
     switch (interaction.commandName) {
       case 'predict':          return await handlePredict(interaction);
       case 'predictgw':        return await handlePredictGW(interaction);
+      case 'viewpredictions':  return await handleViewPredictions(interaction);
       case 'matches':          return await handleMatches(interaction);
       case 'fixtures':         return await handleFixtures(interaction);
       case 'results':          return await handleResults(interaction);
@@ -184,7 +184,16 @@ async function handlePredictScoreSubmit(interaction) {
     return interaction.reply({ embeds: [errorEmbed('This match is no longer available.')], ephemeral: true });
   }
 
-  await db.upsertPredictionWithAudit(interaction.user.id, interaction.user.username, matchId, homeScore, awayScore);
+  // Safety: reject if first kickoff in this group has already passed
+  if (match.kickoff_ts) {
+    const groupMatches = match.gameweek
+      ? await db.getMatchesByGameweek(match.gameweek, match.competition)
+      : await db.getMatchesByDate(match.match_date);
+    const kickoffs = groupMatches.map(m => m.kickoff_ts).filter(Boolean);
+    if (kickoffs.length > 0 && Math.floor(Date.now() / 1000) >= Math.min(...kickoffs)) {
+      return interaction.reply({ embeds: [errorEmbed('Predictions are locked — the first match in this group has already kicked off.')], ephemeral: true });
+    }
+  }
 
   const gw = match.gameweek ? ` · GW${match.gameweek}` : '';
   const embed = new EmbedBuilder()
@@ -291,7 +300,7 @@ async function handlePredictGWModalSubmit(interaction) {
   const session = gwSessions.get(interaction.user.id);
 
   if (!session) {
-    return interaction.reply({ embeds: [errorEmbed('Session expired. Please run `/predictgw` again.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('The bot restarted while you were predicting. Please run /predictgw again to start fresh — your previous predictions are safe.')], ephemeral: true });
   }
 
   const { matches } = session;
@@ -372,7 +381,7 @@ async function handlePredictGWNextPage(interaction) {
   const session = gwSessions.get(interaction.user.id);
 
   if (!session) {
-    return interaction.reply({ embeds: [errorEmbed('Session expired. Please run `/predictgw` again.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('The bot restarted while you were predicting. Please run /predictgw again to start fresh — your previous predictions are safe.')], ephemeral: true });
   }
 
   // showModal is the FIRST thing called on this fresh button interaction
@@ -798,6 +807,47 @@ async function handleAdminCheck(interaction) {
   return interaction.editReply({ embeds: [embed] });
 }
 
+// ── /viewpredictions ──────────────────────────────────────────
+
+async function handleViewPredictions(interaction) {
+  const matchId = interaction.options.getInteger('match_id');
+  const isAdmin  = interaction.member?.permissions.has('ManageGuild');
+
+  const match = await db.getMatch(matchId);
+  if (!match) return interaction.reply({ embeds: [errorEmbed(`Match #${matchId} not found.`)], ephemeral: true });
+
+  const revealSetting = (await db.getSetting('reveal_predictions')) ?? 'after_lock';
+
+  if (!isAdmin) {
+    if (revealSetting === 'never') {
+      return interaction.reply({ embeds: [errorEmbed('Predictions are kept private for this server.')], ephemeral: true });
+    }
+    if (revealSetting === 'after_lock' && !match.locked) {
+      return interaction.reply({ embeds: [errorEmbed('Predictions are hidden until the match locks.')], ephemeral: true });
+    }
+    if (revealSetting === 'after_results' && match.home_score === null) {
+      return interaction.reply({ embeds: [errorEmbed('Predictions are hidden until results are entered.')], ephemeral: true });
+    }
+  }
+
+  const preds = await db.getPredictionsForMatch(matchId);
+  if (preds.length === 0) return interaction.reply({ embeds: [errorEmbed('No predictions found for this match.')], ephemeral: true });
+
+  const lines = preds.map(p => {
+    const pts = p.points !== null ? ` → **${p.points}pts** ${p.points >= 7 ? '💥' : p.points >= 5 ? '🎯' : p.points >= 3 ? '✅' : p.points > 0 ? '📏' : '❌'}` : '';
+    return `**${p.username}**: ${p.home_score}–${p.away_score}${pts}`;
+  });
+
+  const result = match.home_score !== null ? `Result: **${match.home_score}–${match.away_score}**` : 'Result: Pending';
+  const gw = match.gameweek ? ` · GW${match.gameweek}` : '';
+  const embed = new EmbedBuilder().setColor(0x5865f2)
+    .setTitle(`👁️ Predictions — ${match.home_team} vs ${match.away_team}`)
+    .setDescription(`${result}\n\n${lines.join('\n')}`)
+    .setFooter({ text: `#${matchId} · ${match.competition}${gw} · ${preds.length} prediction(s)` });
+
+  return interaction.reply({ embeds: [embed], ephemeral: true });
+}
+
 // ── /audit (admin) ────────────────────────────────────────────
 
 async function handleAudit(interaction) {
@@ -1050,17 +1100,71 @@ async function autoReminder() {
   }
 }
 
-// ── Auto-lock matches at kickoff ──────────────────────────────
+// ── Auto-lock: entire group at first kickoff ──────────────────
 
 async function autoLockMatches() {
   try {
-    const toLock = await db.getUnlockedPastMatches();
-    for (const match of toLock) {
-      await db.lockMatch(match.id);
-      console.log(`🔒 Auto-locked match #${match.id}: ${match.home_team} vs ${match.away_team}`);
-      const channel = await getAnnouncementChannel();
-      if (channel) {
-        await channel.send({ embeds: [successEmbed(`🔒 Predictions locked for **${match.home_team}** vs **${match.away_team}**! Good luck everyone!`)] });
+    const now = Math.floor(Date.now() / 1000);
+
+    // Find all active prediction groups (GW-based or date-based)
+    // and lock the entire group once the earliest kickoff is reached.
+
+    // Check PL gameweeks
+    const gwGroups = await db.query(
+      `SELECT DISTINCT competition, gameweek FROM matches
+       WHERE locked = 0 AND home_score IS NULL AND gameweek IS NOT NULL AND kickoff_ts IS NOT NULL`
+    );
+
+    for (const group of gwGroups) {
+      const matches = await db.query(
+        `SELECT id, kickoff_ts FROM matches
+         WHERE competition = $1 AND gameweek = $2 AND home_score IS NULL`,
+        [group.competition, group.gameweek]
+      );
+      if (matches.length === 0) continue;
+      const kickoffs = matches.map(m => m.kickoff_ts).filter(Boolean);
+      if (kickoffs.length === 0) continue;
+      const earliest = Math.min(...kickoffs);
+      if (now >= earliest) {
+        const ids = matches.map(m => m.id);
+        const locked = await db.lockGroupMatches(ids);
+        if (locked > 0) {
+          console.log(`🔒 Group-locked GW${group.gameweek} (${group.competition}): ${locked} matches`);
+          const channel = await getAnnouncementChannel();
+          if (channel) {
+            await channel.send({ embeds: [successEmbed(`🔒 Predictions are now locked for **GW${group.gameweek} · ${group.competition}**!`)] });
+          }
+        }
+      }
+    }
+
+    // Check date-grouped matches (no gameweek)
+    const dateGroups = await db.query(
+      `SELECT DISTINCT match_date FROM matches
+       WHERE locked = 0 AND home_score IS NULL AND gameweek IS NULL AND kickoff_ts IS NOT NULL`
+    );
+
+    for (const group of dateGroups) {
+      const matches = await db.query(
+        `SELECT id, kickoff_ts, competition FROM matches
+         WHERE match_date = $1 AND gameweek IS NULL AND home_score IS NULL`,
+        [group.match_date]
+      );
+      if (matches.length === 0) continue;
+      const kickoffs = matches.map(m => m.kickoff_ts).filter(Boolean);
+      if (kickoffs.length === 0) continue;
+      const earliest = Math.min(...kickoffs);
+      if (now >= earliest) {
+        const ids = matches.map(m => m.id);
+        const locked = await db.lockGroupMatches(ids);
+        if (locked > 0) {
+          const comp = matches[0].competition;
+          console.log(`🔒 Group-locked date group ${group.match_date} (${comp}): ${locked} matches`);
+          const channel = await getAnnouncementChannel();
+          if (channel) {
+            await channel.send({ embeds: [successEmbed(`🔒 Predictions are now locked for **${comp} · ${group.match_date}**!`)] });
+          }
+        }
       }
     }
   } catch (err) {

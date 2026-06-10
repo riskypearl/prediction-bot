@@ -157,6 +157,10 @@ async function unlockMatch(matchId) {
   return execute('UPDATE matches SET locked = 0 WHERE id = $1', [matchId]);
 }
 
+async function unlockMatch(matchId) {
+  return execute('UPDATE matches SET locked = 0 WHERE id = $1', [matchId]);
+}
+
 async function setResult(matchId, homeScore, awayScore) {
   await execute(
     `UPDATE matches SET home_score = $1, away_score = $2, locked = 1 WHERE id = $3`,
@@ -434,10 +438,61 @@ async function setSetting(key, value) {
   );
 }
 
+// ── Reminder key cleanup ───────────────────────────────────────
+
+async function cleanupReminderKeys() {
+  // Delete reminder_sent_* keys where the kickoff timestamp encoded in the key
+  // is older than 30 days
+  const cutoff = Math.floor(Date.now() / 1000) - 30 * 24 * 60 * 60;
+  const rows = await query(`SELECT key FROM settings WHERE key LIKE 'reminder_sent_%'`);
+  let deleted = 0;
+  for (const row of rows) {
+    // key format: reminder_sent_<kickoff_ts>_<window>
+    const parts = row.key.split('_');
+    const kickoffTs = parseInt(parts[2]);
+    if (!isNaN(kickoffTs) && kickoffTs < cutoff) {
+      await execute(`DELETE FROM settings WHERE key = $1`, [row.key]);
+      deleted++;
+    }
+  }
+  if (deleted > 0) console.log(`🧹 Cleaned up ${deleted} expired reminder key(s)`);
+  return deleted;
+}
+
+// ── Competition stats ──────────────────────────────────────────
+
+async function getCompetitionStats(competition) {
+  const [upcoming, locked, predictions, users] = await Promise.all([
+    queryOne(`SELECT COUNT(*) as c FROM matches WHERE competition = $1 AND home_score IS NULL AND locked = 0`, [competition]),
+    queryOne(`SELECT COUNT(*) as c FROM matches WHERE competition = $1 AND locked = 1`, [competition]),
+    queryOne(`SELECT COUNT(*) as c FROM predictions p JOIN matches m ON p.match_id = m.id WHERE m.competition = $1`, [competition]),
+    queryOne(`SELECT COUNT(DISTINCT p.user_id) as c FROM predictions p JOIN matches m ON p.match_id = m.id WHERE m.competition = $1`, [competition]),
+  ]);
+  return {
+    competition,
+    upcoming_matches:  parseInt(upcoming?.c  ?? 0),
+    locked_matches:    parseInt(locked?.c    ?? 0),
+    total_predictions: parseInt(predictions?.c ?? 0),
+    unique_users:      parseInt(users?.c      ?? 0),
+  };
+}
+
+// ── Lock entire group at first kickoff ────────────────────────
+
+async function lockGroupMatches(matchIds) {
+  if (!matchIds || matchIds.length === 0) return 0;
+  const res = await execute(
+    `UPDATE matches SET locked = 1 WHERE id = ANY($1::int[]) AND locked = 0`,
+    [matchIds]
+  );
+  return res.rowCount ?? 0;
+}
+
 module.exports = {
   db, query, queryOne, addMatch, getMatch, getUpcomingMatches, getMatchesByGameweek, getMatchesByDate,
-  getUnlockedPastMatches, lockMatch, unlockMatch, setResult, upsertPrediction, upsertPredictionWithAudit,
-  logPredictionAudit, getUserPrediction, getRecentAuditLog, getCurrentGWMatches,
+  getUnlockedPastMatches, lockMatch, unlockMatch, lockGroupMatches, setResult,
+  upsertPrediction, upsertPredictionWithAudit, logPredictionAudit, getUserPrediction,
+  getRecentAuditLog, getCurrentGWMatches, cleanupReminderKeys, getCompetitionStats,
   getPredictionsForMatch, getLeaderboard, getGameweekLeaderboard, getDayLeaderboard,
   getUserProfile, getH2H, getSetting, setSetting, calcPoints,
 };

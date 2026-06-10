@@ -149,19 +149,36 @@ function QuickActions({onToast, onRefresh}){
       React.createElement("span",{style:{fontSize:12,color:C.text1,fontWeight:500}},b.label))));
 }
 
+// ── Competition selector ──────────────────────────────────────
+
+function CompSelector({value,onChange}){
+  const opts=[{v:"",l:"Combined"},{v:"Premier League",l:"Premier League"},{v:"World Cup",l:"World Cup"}];
+  return React.createElement("div",{style:{display:"flex",gap:6,marginBottom:"1rem"}},
+    opts.map(o=>React.createElement("button",{key:o.v,onClick:()=>onChange(o.v),
+      style:{padding:"5px 14px",borderRadius:8,border:"0.5px solid "+(value===o.v?C.purple:C.border),
+        background:value===o.v?C.purpleDim:C.bg3,color:value===o.v?C.purpleText:C.text2,
+        cursor:"pointer",fontSize:12,fontWeight:value===o.v?500:400}},o.l)));
+}
+
 // ── Overview ──────────────────────────────────────────────────
 
 function OverviewPage({ovData,onToast,onRefresh}){
+  const[comp,setComp]=React.useState("");
   if(!ovData)return React.createElement(Spinner);
   const d=ovData;
   const gw=d.current_gw||{};
-  const matches=gw.matches||[];
+  const matches=(gw.matches||[]).filter(m=>!comp||m.competition===comp);
+
+  // Pick stats from by_competition or totals
+  const stats = comp && d.by_competition?.[comp] ? d.by_competition[comp] : d;
+
   return React.createElement("div",null,
+    React.createElement(CompSelector,{value:comp,onChange:setComp}),
     React.createElement("div",{style:{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(120px,1fr))",gap:10,marginBottom:"1rem"}},
-      [{label:"Upcoming",value:d.upcoming_matches||0,icon:"📅",color:C.blue},
-       {label:"Total predictions",value:d.total_predictions||0,icon:"📝",color:C.purple},
-       {label:"Total users",value:d.unique_users||0,icon:"👥",color:C.teal},
-       {label:"Locked matches",value:d.locked_matches||0,icon:"🔒",color:C.amber},
+      [{label:"Upcoming",value:stats.upcoming_matches||0,icon:"📅",color:C.blue},
+       {label:"Total predictions",value:stats.total_predictions||0,icon:"📝",color:C.purple},
+       {label:"Total users",value:stats.unique_users||0,icon:"👥",color:C.teal},
+       {label:"Locked matches",value:stats.locked_matches||0,icon:"🔒",color:C.amber},
       ].map(st=>React.createElement("div",{key:st.label,style:s.card},
         React.createElement("div",{style:{fontSize:20,marginBottom:6}},st.icon),
         React.createElement("div",{style:{fontSize:26,fontWeight:500,color:st.color}},st.value),
@@ -297,12 +314,16 @@ function FixturesPage({onToast,onRefresh}){
 // ── Leaderboard ───────────────────────────────────────────────
 
 function LeaderboardPage(){
-  const{data,loading,error,retry}=useApi("/api/admin/leaderboard");
+  const[comp,setComp]=React.useState("Premier League");
+  const path="/api/admin/leaderboard"+(comp?"?competition="+encodeURIComponent(comp):"");
+  const{data,loading,error,retry}=useApi(path,[comp]);
   if(loading)return React.createElement(Spinner);
   if(error)return React.createElement(ErrorBox,{msg:"Failed to load leaderboard: "+error,onRetry:retry});
   const users=data?.leaderboard||[];
-  return React.createElement("div",{style:s.card},
-    React.createElement("div",{style:{...s.sectionTitle,marginBottom:14}},"Season leaderboard"),
+  return React.createElement("div",null,
+    React.createElement(CompSelector,{value:comp,onChange:setComp}),
+    React.createElement("div",{style:s.card},
+    React.createElement("div",{style:{...s.sectionTitle,marginBottom:14}},(comp||"Overall")+" leaderboard"),
     users.length===0?React.createElement("div",{style:{fontSize:12,color:C.text3}},"No data yet."):
     users.map((u,i)=>React.createElement("div",{key:i,style:{display:"flex",alignItems:"center",gap:10,padding:"10px 0",borderBottom:i<users.length-1?"0.5px solid "+C.border:"none"}},
       React.createElement("div",{style:{width:28,height:28,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",fontSize:12,fontWeight:500,flexShrink:0,
@@ -314,7 +335,7 @@ function LeaderboardPage(){
         React.createElement("div",{style:{fontSize:11,color:C.text3}},(u.correct_results||0)+" correct · "+(u.predictions_scored||0)+" scored")),
       React.createElement("div",{style:{textAlign:"right"}},
         React.createElement("div",{style:{fontSize:16,fontWeight:500,color:i===0?C.amberText:C.text1}},u.total_points||0),
-        React.createElement("div",{style:{fontSize:10,color:C.text3}},"pts")))));
+        React.createElement("div",{style:{fontSize:10,color:C.text3}},"pts"))))));
 }
 
 // ── Audit ─────────────────────────────────────────────────────
@@ -497,26 +518,48 @@ app.use('/api/admin', requireApiKey);
 
 app.get('/api/admin/overview', async (req, res) => {
   try {
-    const [upcoming, locked, predictions, users, lastSync] = await Promise.all([
-      db.queryOne(`SELECT COUNT(*) as c FROM matches WHERE home_score IS NULL AND locked = 0`),
-      db.queryOne(`SELECT COUNT(*) as c FROM matches WHERE locked = 1`),
-      db.queryOne(`SELECT COUNT(*) as c FROM predictions`),
-      db.queryOne(`SELECT COUNT(DISTINCT user_id) as c FROM predictions`),
-      db.getSetting('last_sync'),
-    ]);
+    const { competition } = req.query; // optional: 'Premier League', 'World Cup', or omit for combined
+
+    let upcoming, locked, predictions, users;
+
+    if (competition) {
+      const stats = await db.getCompetitionStats(competition);
+      upcoming    = { c: stats.upcoming_matches };
+      locked      = { c: stats.locked_matches };
+      predictions = { c: stats.total_predictions };
+      users       = { c: stats.unique_users };
+    } else {
+      [upcoming, locked, predictions, users] = await Promise.all([
+        db.queryOne(`SELECT COUNT(*) as c FROM matches WHERE home_score IS NULL AND locked = 0`),
+        db.queryOne(`SELECT COUNT(*) as c FROM matches WHERE locked = 1`),
+        db.queryOne(`SELECT COUNT(*) as c FROM predictions`),
+        db.queryOne(`SELECT COUNT(DISTINCT user_id) as c FROM predictions`),
+      ]);
+    }
+
+    const lastSync = await db.getSetting('last_sync');
     const { matches: gwMatches, label: gwLabel } = await db.getCurrentGWMatches();
+
+    // Per-competition stats always included for dashboard toggle
+    const [plStats, wcStats] = await Promise.all([
+      db.getCompetitionStats('Premier League'),
+      db.getCompetitionStats('World Cup'),
+    ]);
+
     res.json({
       upcoming_matches:  parseInt(upcoming?.c  ?? 0),
       locked_matches:    parseInt(locked?.c    ?? 0),
       total_predictions: parseInt(predictions?.c ?? 0),
       unique_users:      parseInt(users?.c      ?? 0),
       last_sync:         lastSync ?? null,
+      by_competition: { 'Premier League': plStats, 'World Cup': wcStats },
       current_gw: {
         label:       gwLabel || null,
         match_count: gwMatches.length,
         matches:     gwMatches.map(m => ({
           id: m.id, home_team: m.home_team, away_team: m.away_team,
           match_date: m.match_date, kickoff_ts: m.kickoff_ts,
+          competition: m.competition,
         })),
       },
     });
@@ -703,6 +746,70 @@ app.patch('/api/admin/settings', async (req, res) => {
     res.json({ updated: updates });
   } catch (err) {
     console.error('API PATCH /settings error:', err);
+    res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+// ── POST /api/admin/setresult ─────────────────────────────────
+
+app.post('/api/admin/setresult', async (req, res) => {
+  try {
+    const { match_id, home_score, away_score } = req.body;
+    if (match_id == null || home_score == null || away_score == null) {
+      return res.status(400).json({ error: 'match_id, home_score, away_score required.' });
+    }
+    const match = await db.getMatch(parseInt(match_id));
+    if (!match) return res.status(404).json({ error: 'Match not found.' });
+    const count = await db.setResult(parseInt(match_id), parseInt(home_score), parseInt(away_score));
+    console.log(`✅ Admin set result for match #${match_id}: ${home_score}–${away_score}`);
+    res.json({ success: true, match_id: parseInt(match_id), home_score: parseInt(home_score), away_score: parseInt(away_score), predictions_scored: count });
+  } catch (err) {
+    console.error('API /setresult error:', err);
+    res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+// ── POST /api/admin/addmatch ──────────────────────────────────
+
+app.post('/api/admin/addmatch', async (req, res) => {
+  try {
+    const { competition, home_team, away_team, match_date, gameweek, kickoff_ts } = req.body;
+    if (!competition || !home_team || !away_team || !match_date) {
+      return res.status(400).json({ error: 'competition, home_team, away_team, match_date required.' });
+    }
+    const result = await db.addMatch(competition, home_team, away_team, match_date, gameweek ?? null, kickoff_ts ?? null);
+    const match  = await db.getMatch(result.lastInsertRowid);
+    console.log(`➕ Admin added match #${match.id}: ${home_team} vs ${away_team}`);
+    res.json({ success: true, match });
+  } catch (err) {
+    console.error('API /addmatch error:', err);
+    res.status(500).json({ error: 'Internal server error.' });
+  }
+});
+
+// ── GET /api/admin/missing ────────────────────────────────────
+// Returns missing prediction counts per user for current active set
+// Query params: competition (optional)
+
+app.get('/api/admin/missing', async (req, res) => {
+  try {
+    const { matches, label } = await db.getCurrentGWMatches();
+    if (matches.length === 0) return res.json({ label: null, missing: [] });
+    const matchIds = matches.map(m => m.id);
+    const allUsers = await db.query(`SELECT DISTINCT user_id, username FROM predictions ORDER BY username ASC`);
+    const missing = [];
+    for (const user of allUsers) {
+      const rows = await db.query(
+        `SELECT COUNT(*) as c FROM predictions WHERE user_id = $1 AND match_id = ANY($2::int[])`,
+        [user.user_id, matchIds]
+      );
+      const predicted = parseInt(rows[0]?.c ?? 0);
+      const remaining = matchIds.length - predicted;
+      if (remaining > 0) missing.push({ user_id: user.user_id, username: user.username, remaining, total: matchIds.length, predicted });
+    }
+    res.json({ label, total_matches: matchIds.length, missing });
+  } catch (err) {
+    console.error('API /missing error:', err);
     res.status(500).json({ error: 'Internal server error.' });
   }
 });
