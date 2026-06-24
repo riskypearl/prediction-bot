@@ -10,7 +10,7 @@ const COMPETITIONS = {
 
 async function apiFetch(path) {
   const res = await fetch(`${API_URL}${path}`, { headers: { 'X-Auth-Token': API_KEY } });
-  if (!res.ok) throw new Error(`API error ${res.status}`);
+  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text().catch(() => '')}`);
   return res.json();
 }
 
@@ -18,14 +18,15 @@ async function syncFixtures(competitionName) {
   const code = COMPETITIONS[competitionName];
   if (!code) return 0;
 
-  // Fetch all matches from today onwards regardless of status.
-  // This captures SCHEDULED, TIMED, IN_PLAY, and PAUSED games without
-  // relying on comma-separated status values which some API tiers don't support.
-  const today = new Date().toISOString().slice(0, 10);
-  const data = await apiFetch(`/competitions/${code}/matches?dateFrom=${today}`);
+  // Fetch all matches for the competition — no status or date filter.
+  // Only insert matches that haven't been played yet (home_score IS NULL check
+  // in getUpcomingMatches handles display; ON CONFLICT handles duplicates).
+  const data = await apiFetch(`/competitions/${code}/matches`);
 
   let count = 0;
   for (const match of data.matches || []) {
+    if (match.status === 'FINISHED' || match.status === 'AWARDED' || match.status === 'CANCELLED' || match.status === 'POSTPONED') continue;
+
     // Explicitly check for null/undefined/empty — WC returns { name: null } for placeholder fixtures
     const homeName = match.homeTeam && match.homeTeam.name != null && match.homeTeam.name !== '' ? match.homeTeam.name : null;
     const awayName = match.awayTeam && match.awayTeam.name != null && match.awayTeam.name !== '' ? match.awayTeam.name : null;
