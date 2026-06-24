@@ -18,7 +18,9 @@ async function syncFixtures(competitionName) {
   const code = COMPETITIONS[competitionName];
   if (!code) return 0;
 
-  const data = await apiFetch(`/competitions/${code}/matches?status=SCHEDULED&limit=30`);
+  // SCHEDULED = no confirmed kickoff time; TIMED = confirmed kickoff time.
+  // Both statuses must be fetched — WC MD3 fixtures arrive as TIMED.
+  const data = await apiFetch(`/competitions/${code}/matches?status=SCHEDULED,TIMED`);
 
   let count = 0;
   for (const match of data.matches || []) {
