@@ -18,9 +18,9 @@ async function syncFixtures(competitionName) {
   const code = COMPETITIONS[competitionName];
   if (!code) return 0;
 
-  // SCHEDULED = no confirmed kickoff time; TIMED = confirmed kickoff time.
-  // Both statuses must be fetched — WC MD3 fixtures arrive as TIMED.
-  const data = await apiFetch(`/competitions/${code}/matches?status=SCHEDULED,TIMED`);
+  // Fetch all non-finished matches: scheduled, timed, in progress, paused.
+  // This ensures games that have already kicked off today are still captured.
+  const data = await apiFetch(`/competitions/${code}/matches?status=SCHEDULED,TIMED,IN_PLAY,PAUSED`);
 
   let count = 0;
   for (const match of data.matches || []) {
