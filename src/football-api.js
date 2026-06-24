@@ -18,9 +18,11 @@ async function syncFixtures(competitionName) {
   const code = COMPETITIONS[competitionName];
   if (!code) return 0;
 
-  // Fetch all non-finished matches: scheduled, timed, in progress, paused.
-  // This ensures games that have already kicked off today are still captured.
-  const data = await apiFetch(`/competitions/${code}/matches?status=SCHEDULED,TIMED,IN_PLAY,PAUSED`);
+  // Fetch all matches from today onwards regardless of status.
+  // This captures SCHEDULED, TIMED, IN_PLAY, and PAUSED games without
+  // relying on comma-separated status values which some API tiers don't support.
+  const today = new Date().toISOString().slice(0, 10);
+  const data = await apiFetch(`/competitions/${code}/matches?dateFrom=${today}`);
 
   let count = 0;
   for (const match of data.matches || []) {
