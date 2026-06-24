@@ -11,11 +11,11 @@ client.once('ready', () => {
   client.user.setActivity('⚽ Prediction League', { type: 3 });
   setTimeout(() => {
     autoSync();
-    db.cleanupReminderKeys(); // clean expired reminder dedup keys on startup
+    db.cleanupReminderKeys().catch(err => console.error('Reminder cleanup error:', err.message));
     setInterval(autoSync, 30 * 60 * 1000);
     setInterval(autoLockMatches, 60 * 1000);
     setInterval(autoReminder, 5 * 60 * 1000);
-    setInterval(() => db.cleanupReminderKeys(), 24 * 60 * 60 * 1000); // daily cleanup
+    setInterval(() => db.cleanupReminderKeys().catch(err => console.error('Reminder cleanup error:', err.message)), 24 * 60 * 60 * 1000);
   }, 5000);
 });
 
@@ -580,13 +580,13 @@ async function handleProfile(interaction) {
     .addFields(
       { name: '🏆 Total Points', value: String(stats.total_points), inline: true },
       { name: '📋 Predictions', value: String(stats.predictions_scored), inline: true },
-      { name: '\u200b', value: '\u200b', inline: true },
+      { name: '​', value: '​', inline: true },
       { name: '🎯 Exact Scores', value: String(stats.exact_scores), inline: true },
       { name: '📏 Close Scores', value: String(stats.close_scores || 0), inline: true },
       { name: '✅ Correct Results', value: String(stats.correct_results), inline: true },
       { name: '🔥 Current Streak', value: String(stats.current_streak), inline: true },
       { name: '⭐ Best Streak', value: String(stats.best_streak), inline: true },
-      { name: '\u200b', value: '\u200b', inline: true },
+      { name: '​', value: '​', inline: true },
       { name: '📋 Upcoming Predictions', value: upcomingLines },
     );
 
