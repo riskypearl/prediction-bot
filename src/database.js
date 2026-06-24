@@ -157,10 +157,6 @@ async function unlockMatch(matchId) {
   return execute('UPDATE matches SET locked = 0 WHERE id = $1', [matchId]);
 }
 
-async function unlockMatch(matchId) {
-  return execute('UPDATE matches SET locked = 0 WHERE id = $1', [matchId]);
-}
-
 async function setResult(matchId, homeScore, awayScore) {
   await execute(
     `UPDATE matches SET home_score = $1, away_score = $2, locked = 1 WHERE id = $3`,
@@ -237,9 +233,11 @@ async function getRecentAuditLog(userId = null, matchId = null) {
 
 async function getCurrentGWMatches() {
   const gwRows = await query(
-    `SELECT DISTINCT competition, gameweek FROM matches
+    `SELECT competition, gameweek, MIN(kickoff_ts) as next_kickoff
+     FROM matches
      WHERE gameweek IS NOT NULL AND home_score IS NULL AND locked = 0
-     ORDER BY gameweek ASC LIMIT 1`
+     GROUP BY competition, gameweek
+     ORDER BY next_kickoff ASC LIMIT 1`
   );
   if (gwRows.length > 0) {
     const { competition, gameweek } = gwRows[0];
@@ -441,13 +439,10 @@ async function setSetting(key, value) {
 // ── Reminder key cleanup ───────────────────────────────────────
 
 async function cleanupReminderKeys() {
-  // Delete reminder_sent_* keys where the kickoff timestamp encoded in the key
-  // is older than 30 days
   const cutoff = Math.floor(Date.now() / 1000) - 30 * 24 * 60 * 60;
   const rows = await query(`SELECT key FROM settings WHERE key LIKE 'reminder_sent_%'`);
   let deleted = 0;
   for (const row of rows) {
-    // key format: reminder_sent_<kickoff_ts>_<window>
     const parts = row.key.split('_');
     const kickoffTs = parseInt(parts[2]);
     if (!isNaN(kickoffTs) && kickoffTs < cutoff) {
