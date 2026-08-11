@@ -1203,9 +1203,23 @@ async function autoSync() {
             await channel.send({ embeds: [resultEmbed] });
 
             if (match.gameweek) {
-              const gwRows = await db.getGameweekLeaderboard(match.gameweek);
+              const gwRows = await db.getGameweekLeaderboard(match.gameweek, match.competition);
               if (gwRows.length > 0) {
                 await channel.send({ embeds: [leaderboardEmbed(gwRows, `GW${match.gameweek} Standings`)] });
+              }
+
+              // Once every match in this gameweek has a result, post a one-time final standings summary
+              const gwMatches = await db.getMatchesByGameweek(match.gameweek, match.competition);
+              const gwComplete = gwMatches.length > 0 && gwMatches.every(m => m.home_score !== null);
+              if (gwComplete) {
+                const dedupKey = `final_standings_sent_${match.competition}_${match.gameweek}`;
+                const alreadyAnnounced = await db.getSetting(dedupKey);
+                if (!alreadyAnnounced) {
+                  await db.setSetting(dedupKey, 'true');
+                  if (gwRows.length > 0) {
+                    await channel.send({ embeds: [leaderboardEmbed(gwRows, `FINAL GW${match.gameweek} Standings — ${match.competition}`)] });
+                  }
+                }
               }
             }
           }
