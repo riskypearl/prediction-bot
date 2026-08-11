@@ -1,10 +1,21 @@
 const { Pool } = require('pg');
 
+if (!process.env.DATABASE_URL) {
+  console.error('❌ DATABASE_URL is not set — falling back to local Postgres defaults, which will fail to connect.');
+}
+
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_URL && (process.env.DATABASE_URL.includes('railway') || process.env.DATABASE_URL.includes('rlwy.net'))
     ? { rejectUnauthorized: false }
     : false,
+});
+
+// pg emits 'error' for connection failures on idle pooled clients (e.g. DB
+// unreachable, network blip); without a listener, node treats it as an
+// uncaught exception and crashes the whole process.
+pool.on('error', (err) => {
+  console.error('Postgres pool error:', err.message);
 });
 
 // ── Init tables ────────────────────────────────────────────────
@@ -439,19 +450,24 @@ async function setSetting(key, value) {
 // ── Reminder key cleanup ───────────────────────────────────────
 
 async function cleanupReminderKeys() {
-  const cutoff = Math.floor(Date.now() / 1000) - 30 * 24 * 60 * 60;
-  const rows = await query(`SELECT key FROM settings WHERE key LIKE 'reminder_sent_%'`);
-  let deleted = 0;
-  for (const row of rows) {
-    const parts = row.key.split('_');
-    const kickoffTs = parseInt(parts[2]);
-    if (!isNaN(kickoffTs) && kickoffTs < cutoff) {
-      await execute(`DELETE FROM settings WHERE key = $1`, [row.key]);
-      deleted++;
+  try {
+    const cutoff = Math.floor(Date.now() / 1000) - 30 * 24 * 60 * 60;
+    const rows = await query(`SELECT key FROM settings WHERE key LIKE 'reminder_sent_%'`);
+    let deleted = 0;
+    for (const row of rows) {
+      const parts = row.key.split('_');
+      const kickoffTs = parseInt(parts[2]);
+      if (!isNaN(kickoffTs) && kickoffTs < cutoff) {
+        await execute(`DELETE FROM settings WHERE key = $1`, [row.key]);
+        deleted++;
+      }
     }
+    if (deleted > 0) console.log(`🧹 Cleaned up ${deleted} expired reminder key(s)`);
+    return deleted;
+  } catch (err) {
+    console.error('Cleanup-reminder-keys error:', err.message);
+    return 0;
   }
-  if (deleted > 0) console.log(`🧹 Cleaned up ${deleted} expired reminder key(s)`);
-  return deleted;
 }
 
 // ── Competition stats ──────────────────────────────────────────
