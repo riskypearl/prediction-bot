@@ -2,6 +2,8 @@ const { Pool } = require('pg');
 
 if (!process.env.DATABASE_URL) {
   console.error('❌ DATABASE_URL is not set — falling back to local Postgres defaults, which will fail to connect.');
+} else {
+  console.log('🔎 DATABASE_URL seen at boot:', process.env.DATABASE_URL.replace(/:[^:@/]+@/, ':****@'));
 }
 
 const pool = new Pool({
