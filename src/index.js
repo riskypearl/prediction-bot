@@ -47,9 +47,6 @@ async function getAnnouncementChannel() {
 // ── In-memory store for predictgw sessions ────────────────────
 const gwSessions = new Map();
 
-// ── In-memory store for predicttable sessions ──────────────────
-const tableSessions = new Map();
-
 // ── Command router ────────────────────────────────────────────
 
 client.on('interactionCreate', async (interaction) => {
@@ -66,12 +63,8 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.isButton() && interaction.customId.startsWith('predictgw_next_')) {
     return await handlePredictGWNextPage(interaction);
   }
-  if (interaction.isModalSubmit() && interaction.customId.startsWith('predicttable_page')) {
+  if (interaction.isModalSubmit() && interaction.customId === 'predicttable_submit') {
     return await handleTablePredictModalSubmit(interaction);
-  }
-  // Button to open next predicttable modal page
-  if (interaction.isButton() && interaction.customId.startsWith('predicttable_next_')) {
-    return await handleTablePredictNextPage(interaction);
   }
   if (!interaction.isChatInputCommand()) return;
   try {
@@ -433,10 +426,10 @@ function buildSummaryEmbed(session) {
 }
 
 // ── /predicttable ────────────────────────────────────────────
-// Predict the final Premier League table (20 teams, 5 positions per page)
+// Predict the final Premier League table — paste all 20 teams, one per
+// line, in predicted finishing order, into a single modal field.
 
 const TABLE_SIZE = 20;
-const TABLE_PAGE_SIZE = 5;
 
 // Common nicknames/abbreviations -> a substring that's unambiguous within
 // their official name, so "Spurs" resolves to whichever synced team name
@@ -503,96 +496,64 @@ async function handlePredictTable(interaction) {
   }
 
   const existing = await db.getUserTablePrediction(interaction.user.id);
-  const existingByPosition = {};
-  for (const row of existing) existingByPosition[row.predicted_position] = row.team;
+  const prefill = existing.length > 0 ? existing.map(r => r.team).join('\n') : '';
 
-  tableSessions.set(interaction.user.id, { teams, answers: {}, existingByPosition });
-
-  return interaction.showModal(buildTableModal(interaction.user.id, 0));
-}
-
-function buildTableModal(userId, page) {
-  const session = tableSessions.get(userId);
-  const { existingByPosition, answers } = session;
-  const start = page * TABLE_PAGE_SIZE;
-  const totalPages = TABLE_SIZE / TABLE_PAGE_SIZE;
+  const input = new TextInputBuilder()
+    .setCustomId('table_list')
+    .setLabel('Paste all 20 teams, one per line, in order')
+    .setStyle(TextInputStyle.Paragraph)
+    .setPlaceholder('1. Arsenal\n2. Liverpool\n3. Spurs\n...\n20. Sunderland')
+    .setRequired(true);
+  if (prefill) input.setValue(prefill);
 
   const modal = new ModalBuilder()
-    .setCustomId(`predicttable_page${page}`)
-    .setTitle(`Predict the Table (${page + 1}/${totalPages})`);
+    .setCustomId('predicttable_submit')
+    .setTitle('Predict the Final Table')
+    .addComponents(new ActionRowBuilder().addComponents(input));
 
-  for (let i = start + 1; i <= start + TABLE_PAGE_SIZE; i++) {
-    const prefill = answers[i] || existingByPosition[i] || '';
-    const input = new TextInputBuilder()
-      .setCustomId(`pos_${i}`)
-      .setLabel(`Position ${i}`)
-      .setStyle(TextInputStyle.Short)
-      .setPlaceholder('e.g. Arsenal, Spurs, Man City')
-      .setRequired(true);
-    if (prefill) input.setValue(prefill);
-    modal.addComponents(new ActionRowBuilder().addComponents(input));
-  }
-
-  return modal;
+  return interaction.showModal(modal);
 }
 
 async function handleTablePredictModalSubmit(interaction) {
-  const page = parseInt(interaction.customId.replace('predicttable_page', ''));
-  const session = tableSessions.get(interaction.user.id);
+  const raw = interaction.fields.getTextInputValue('table_list');
+  // Accept one team per line, and tolerate a leading "1.", "1)" etc. or commas
+  const lines = raw
+    .split(/\r?\n|,/)
+    .map(s => s.replace(/^\s*\d+[.)]\s*/, '').trim())
+    .filter(Boolean);
 
-  if (!session) {
-    return interaction.reply({ embeds: [errorEmbed('The bot restarted while you were predicting. Please run /predicttable again to start fresh.')], ephemeral: true });
-  }
-
-  const start = page * TABLE_PAGE_SIZE;
-  for (let i = start + 1; i <= start + TABLE_PAGE_SIZE; i++) {
-    session.answers[i] = interaction.fields.getTextInputValue(`pos_${i}`).trim();
-  }
-
-  const nextPage = page + 1;
-  const totalPages = TABLE_SIZE / TABLE_PAGE_SIZE;
-
-  if (nextPage < totalPages) {
-    const continueBtn = new ButtonBuilder()
-      .setCustomId(`predicttable_next_${nextPage}`)
-      .setLabel(`Continue to positions ${nextPage * TABLE_PAGE_SIZE + 1}–${(nextPage + 1) * TABLE_PAGE_SIZE} →`)
-      .setStyle(ButtonStyle.Primary);
-
+  if (lines.length !== TABLE_SIZE) {
     return interaction.reply({
-      embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`⚽ Page ${page + 1} saved! Click to continue...`)],
-      components: [new ActionRowBuilder().addComponents(continueBtn)],
+      embeds: [errorEmbed(`Table not saved — found ${lines.length} team${lines.length === 1 ? '' : 's'}, need exactly ${TABLE_SIZE}. Put one team per line (or comma-separated), in your predicted finishing order.`)],
       ephemeral: true,
     });
   }
 
-  // Final page — validate the full table: every position filled, every entry
-  // a recognised team, and no team used twice.
-  const { teams } = session;
+  const teams = await db.getPLTeams();
   const entries = [];
   const errors = [];
   const seen = new Set();
 
-  for (let pos = 1; pos <= TABLE_SIZE; pos++) {
-    const raw = session.answers[pos];
-    const { match, candidates } = resolveTeam(raw, teams);
+  lines.forEach((line, i) => {
+    const pos = i + 1;
+    const { match, candidates } = resolveTeam(line, teams);
     if (!match) {
       if (candidates.length > 1) {
-        errors.push(`Position ${pos}: "${raw}" could mean ${candidates.join(' or ')} — be more specific.`);
+        errors.push(`Line ${pos}: "${line}" could mean ${candidates.join(' or ')} — be more specific.`);
       } else {
-        errors.push(`Position ${pos}: "${raw}" isn't a recognised Premier League team.`);
+        errors.push(`Line ${pos}: "${line}" isn't a recognised Premier League team.`);
       }
-      continue;
+      return;
     }
     if (seen.has(match)) {
-      errors.push(`Position ${pos}: "${match}" is already used at another position.`);
-      continue;
+      errors.push(`Line ${pos}: "${match}" is already used at another position.`);
+      return;
     }
     seen.add(match);
     entries.push({ team: match, position: pos });
-  }
+  });
 
   if (errors.length > 0) {
-    tableSessions.delete(interaction.user.id);
     return interaction.reply({
       embeds: [errorEmbed(`Table not saved — fix these and run \`/predicttable\` again:\n${errors.join('\n')}`)],
       ephemeral: true,
@@ -600,24 +561,12 @@ async function handleTablePredictModalSubmit(interaction) {
   }
 
   await db.saveTablePrediction(interaction.user.id, interaction.user.username, entries);
-  tableSessions.delete(interaction.user.id);
 
-  const lines = entries.map(e => `**${e.position}.** ${e.team}`).join('\n');
+  const lines2 = entries.map(e => `**${e.position}.** ${e.team}`).join('\n');
   return interaction.reply({
-    embeds: [new EmbedBuilder().setColor(0x57f287).setTitle('✅ Table Prediction Saved!').setDescription(lines).setFooter({ text: 'Run /predicttable again any time to update it' })],
+    embeds: [new EmbedBuilder().setColor(0x57f287).setTitle('✅ Table Prediction Saved!').setDescription(lines2).setFooter({ text: 'Run /predicttable again any time to update it' })],
     ephemeral: true,
   });
-}
-
-async function handleTablePredictNextPage(interaction) {
-  const nextPage = parseInt(interaction.customId.replace('predicttable_next_', ''));
-  const session = tableSessions.get(interaction.user.id);
-
-  if (!session) {
-    return interaction.reply({ embeds: [errorEmbed('The bot restarted while you were predicting. Please run /predicttable again to start fresh.')], ephemeral: true });
-  }
-
-  return interaction.showModal(buildTableModal(interaction.user.id, nextPage));
 }
 
 // ── /matches ──────────────────────────────────────────────────
