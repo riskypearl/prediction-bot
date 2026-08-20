@@ -5,7 +5,6 @@ const API_KEY  = process.env.FOOTBALL_API_KEY;
 
 const COMPETITIONS = {
   'Premier League': 'PL',
-  'World Cup': 'WC',
 };
 
 async function apiFetch(path) {

@@ -4,11 +4,7 @@ const commands = [
   // User commands
   new SlashCommandBuilder()
     .setName('predict')
-    .setDescription('Submit your prediction for a match')
-    .addStringOption(o => o.setName('competition').setDescription('Filter by competition').addChoices(
-      { name: 'Premier League', value: 'Premier League' },
-      { name: 'World Cup', value: 'World Cup' }
-    )),
+    .setDescription('Submit your prediction for a match'),
 
   new SlashCommandBuilder()
     .setName('predictgw')
@@ -21,11 +17,7 @@ const commands = [
   new SlashCommandBuilder()
     .setName('matches')
     .setDescription('View upcoming matches')
-    .addStringOption(o => o.setName('competition').setDescription('Filter by competition').addChoices(
-      { name: 'Premier League', value: 'Premier League' },
-      { name: 'World Cup', value: 'World Cup' }
-    ))
-    .addIntegerOption(o => o.setName('gameweek').setDescription('Filter by gameweek (PL only)')),
+    .addIntegerOption(o => o.setName('gameweek').setDescription('Filter by gameweek')),
 
   new SlashCommandBuilder()
     .setName('fixtures')
@@ -34,19 +26,11 @@ const commands = [
       { name: 'Today', value: 'today' },
       { name: 'Tomorrow', value: 'tomorrow' },
       { name: 'All upcoming', value: 'all' }
-    ))
-    .addStringOption(o => o.setName('competition').setDescription('Filter by competition').addChoices(
-      { name: 'Premier League', value: 'Premier League' },
-      { name: 'World Cup', value: 'World Cup' }
     )),
 
   new SlashCommandBuilder()
     .setName('results')
-    .setDescription('Show recent results')
-    .addStringOption(o => o.setName('competition').setDescription('Filter by competition').addChoices(
-      { name: 'Premier League', value: 'Premier League' },
-      { name: 'World Cup', value: 'World Cup' }
-    )),
+    .setDescription('Show recent results'),
 
   new SlashCommandBuilder()
     .setName('mypredictions')
@@ -55,13 +39,7 @@ const commands = [
   new SlashCommandBuilder()
     .setName('leaderboard')
     .setDescription('Show standings')
-    .addStringOption(o => o.setName('competition').setDescription('Filter').addChoices(
-      { name: 'Premier League', value: 'Premier League' },
-      { name: 'World Cup', value: 'World Cup' },
-      { name: 'Overall', value: 'overall' }
-    ))
-    .addIntegerOption(o => o.setName('gameweek').setDescription('Show a specific gameweek (PL)'))
-    .addStringOption(o => o.setName('date').setDescription('Show a specific date (YYYY-MM-DD) for World Cup')),
+    .addIntegerOption(o => o.setName('gameweek').setDescription('Show a specific gameweek')),
 
   new SlashCommandBuilder()
     .setName('profile')
@@ -82,14 +60,10 @@ const commands = [
   new SlashCommandBuilder()
     .setName('addmatch')
     .setDescription('[ADMIN] Add a new match')
-    .addStringOption(o => o.setName('competition').setDescription('Competition').setRequired(true).addChoices(
-      { name: 'Premier League', value: 'Premier League' },
-      { name: 'World Cup', value: 'World Cup' }
-    ))
     .addStringOption(o => o.setName('home_team').setDescription('Home team').setRequired(true))
     .addStringOption(o => o.setName('away_team').setDescription('Away team').setRequired(true))
     .addStringOption(o => o.setName('match_date').setDescription('Date (e.g. 12 Aug 2025 15:00)').setRequired(true))
-    .addIntegerOption(o => o.setName('gameweek').setDescription('Gameweek number (PL)')),
+    .addIntegerOption(o => o.setName('gameweek').setDescription('Gameweek number')),
 
   new SlashCommandBuilder()
     .setName('setresult')
@@ -145,6 +119,11 @@ const commands = [
     .setName('wipeprofiles')
     .setDescription('[ADMIN] Permanently reset all stats and delete all predictions for every user')
     .addStringOption(o => o.setName('confirm').setDescription('Type "WIPE EVERYONE" exactly to confirm').setRequired(true)),
+
+  new SlashCommandBuilder()
+    .setName('archiveworldcup')
+    .setDescription('[ADMIN] Move World Cup matches/predictions to archive tables and deactivate World Cup')
+    .addBooleanOption(o => o.setName('confirm').setDescription('Set true to confirm').setRequired(true)),
 
 ].map(c => c.toJSON());
 

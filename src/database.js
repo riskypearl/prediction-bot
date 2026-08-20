@@ -565,6 +565,64 @@ async function wipeAllProfilesAndPredictions() {
   };
 }
 
+// ── Archive World Cup data (moved out, not deleted) ─────────────
+
+async function archiveWorldCupData() {
+  await execute(`
+    CREATE TABLE IF NOT EXISTS matches_archive (
+      id INTEGER PRIMARY KEY,
+      competition TEXT NOT NULL,
+      home_team TEXT NOT NULL,
+      away_team TEXT NOT NULL,
+      match_date TEXT NOT NULL,
+      kickoff_ts BIGINT,
+      home_score INTEGER,
+      away_score INTEGER,
+      locked INTEGER,
+      api_id TEXT,
+      gameweek INTEGER,
+      created_at TEXT,
+      archived_at TEXT DEFAULT (NOW()::TEXT)
+    )
+  `);
+  await execute(`
+    CREATE TABLE IF NOT EXISTS predictions_archive (
+      id INTEGER PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      username TEXT NOT NULL,
+      match_id INTEGER NOT NULL,
+      home_score INTEGER NOT NULL,
+      away_score INTEGER NOT NULL,
+      points INTEGER,
+      created_at TEXT,
+      archived_at TEXT DEFAULT (NOW()::TEXT)
+    )
+  `);
+
+  const wcMatches = await query(`SELECT id FROM matches WHERE competition = 'World Cup'`);
+  const ids = wcMatches.map(r => r.id);
+  if (ids.length === 0) return { matches: 0, predictions: 0 };
+
+  const predRes = await execute(
+    `INSERT INTO predictions_archive (id, user_id, username, match_id, home_score, away_score, points, created_at)
+     SELECT id, user_id, username, match_id, home_score, away_score, points, created_at
+     FROM predictions WHERE match_id = ANY($1::int[])
+     ON CONFLICT (id) DO NOTHING`,
+    [ids]
+  );
+  await execute(`DELETE FROM predictions WHERE match_id = ANY($1::int[])`, [ids]);
+
+  const matchRes = await execute(
+    `INSERT INTO matches_archive (id, competition, home_team, away_team, match_date, kickoff_ts, home_score, away_score, locked, api_id, gameweek, created_at)
+     SELECT id, competition, home_team, away_team, match_date, kickoff_ts, home_score, away_score, locked, api_id, gameweek, created_at
+     FROM matches WHERE competition = 'World Cup'
+     ON CONFLICT (id) DO NOTHING`
+  );
+  await execute(`DELETE FROM matches WHERE competition = 'World Cup'`);
+
+  return { matches: matchRes.rowCount ?? 0, predictions: predRes.rowCount ?? 0 };
+}
+
 module.exports = {
   db, query, queryOne, addMatch, getMatch, getUpcomingMatches, getMatchesByGameweek, getMatchesByDate,
   getUnlockedPastMatches, lockMatch, unlockMatch, lockGroupMatches, setResult,
@@ -573,5 +631,5 @@ module.exports = {
   getPredictionsForMatch, getLeaderboard, getGameweekLeaderboard, getDayLeaderboard,
   getUserProfile, getH2H, getSetting, setSetting, calcPoints,
   getPLTeams, saveTablePrediction, getUserTablePrediction, getAllTablePredictionsGrouped,
-  wipeAllProfilesAndPredictions,
+  wipeAllProfilesAndPredictions, archiveWorldCupData,
 };

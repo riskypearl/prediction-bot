@@ -95,6 +95,7 @@ client.on('interactionCreate', async (interaction) => {
       case 'serversettings':   return await handleServerSettings(interaction);
       case 'previewstandings': return await handlePreviewStandings(interaction);
       case 'wipeprofiles':     return await handleWipeProfiles(interaction);
+      case 'archiveworldcup':  return await handleArchiveWorldCup(interaction);
     }
   } catch (err) {
     console.error(`Error in /${interaction.commandName}:`, err);
@@ -730,12 +731,11 @@ async function handleH2H(interaction) {
 
 async function handleAddMatch(interaction) {
   if (!isAdmin(interaction)) return interaction.reply({ embeds: [errorEmbed('No permission.')], ephemeral: true });
-  const competition = interaction.options.getString('competition');
   const homeTeam    = interaction.options.getString('home_team');
   const awayTeam    = interaction.options.getString('away_team');
   const matchDate   = interaction.options.getString('match_date');
   const gameweek    = interaction.options.getInteger('gameweek');
-  const result = await db.addMatch(competition, homeTeam, awayTeam, matchDate, gameweek);
+  const result = await db.addMatch('Premier League', homeTeam, awayTeam, matchDate, gameweek);
   const match  = await db.getMatch(result.lastInsertRowid);
   return interaction.reply({ embeds: [matchEmbed(match, `✅ Match #${match.id} Added`)] });
 }
@@ -1136,6 +1136,31 @@ async function handleWipeProfiles(interaction) {
     });
   } catch (err) {
     console.error('Wipe profiles error:', err);
+    return interaction.editReply({ embeds: [errorEmbed(`Failed: ${err.message}`)] });
+  }
+}
+
+// ── /archiveworldcup ──────────────────────────────────────────
+// Moves World Cup matches/predictions into archive tables (data kept, just
+// out of the live tables) and, combined with World Cup already being
+// removed from every command choice and from autoSync, means World Cup can
+// no longer contribute anything to /profile or /leaderboard going forward.
+
+async function handleArchiveWorldCup(interaction) {
+  if (!isAdmin(interaction)) return interaction.reply({ embeds: [errorEmbed('No permission.')], ephemeral: true });
+
+  if (interaction.options.getBoolean('confirm') !== true) {
+    return interaction.reply({ embeds: [errorEmbed('Set `confirm` to `True` to move all World Cup matches and predictions into archive tables.')], ephemeral: true });
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+  try {
+    const result = await db.archiveWorldCupData();
+    return interaction.editReply({
+      embeds: [successEmbed(`Archived ${result.matches} World Cup match(es) and ${result.predictions} prediction(s). World Cup is now fully deactivated — it's no longer an option on any command and won't be synced.`)],
+    });
+  } catch (err) {
+    console.error('Archive World Cup error:', err);
     return interaction.editReply({ embeds: [errorEmbed(`Failed: ${err.message}`)] });
   }
 }
