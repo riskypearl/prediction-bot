@@ -48,21 +48,15 @@ CLIENT_ID=your_client_id_here
 GUILD_ID=your_guild_id_here
 ```
 
-### 4. Register slash commands
-
-```bash
-npm run deploy
-```
-
-You should see: `✅ Slash commands registered successfully!`
-
-### 5. Start the bot
+### 4. Start the bot
 
 ```bash
 npm start
 ```
 
-You should see: `✅ Logged in as YourBot#1234`
+You should see: `✅ Logged in as YourBot#1234` followed by `✅ Slash commands registered`.
+
+The bot registers its slash commands with Discord automatically on every startup — no separate step needed. `npm run deploy` still exists if you ever want to register commands without starting the whole bot (e.g. from a machine that isn't running it).
 
 ---
 

@@ -1,17 +1,29 @@
 require('dotenv').config();
-const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ActionRowBuilder, StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle, ButtonBuilder, ButtonStyle, REST, Routes } = require('discord.js');
 const db = require('./database');
 const { matchEmbed, matchListEmbed, leaderboardEmbed, profileEmbed, h2hEmbed, errorEmbed, successEmbed } = require('./embeds');
 const api = require('./football-api');
 const { startApi } = require('./api');
+const commands = require('./commands');
 
 startApi();
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
+async function registerCommands() {
+  try {
+    const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
+    await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: commands });
+    console.log('✅ Slash commands registered');
+  } catch (err) {
+    console.error('Slash command registration failed:', err.message);
+  }
+}
+
 client.once('ready', () => {
   console.log(`✅ Logged in as ${client.user.tag}`);
   client.user.setActivity('⚽ Prediction League', { type: 3 });
+  registerCommands();
   setTimeout(() => {
     autoSync();
     db.cleanupReminderKeys(); // clean expired reminder dedup keys on startup
