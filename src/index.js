@@ -1184,20 +1184,31 @@ async function handlePreviewStandings(interaction) {
   if (!isAdmin(interaction)) return interaction.reply({ embeds: [errorEmbed('No permission.')], ephemeral: true });
 
   const gameweek = interaction.options.getInteger('gameweek') || 1;
-  const channel = await getAnnouncementChannel();
+
+  let channel;
+  try {
+    channel = await getAnnouncementChannel();
+  } catch (err) {
+    return interaction.reply({ embeds: [errorEmbed(`Failed to look up the announcement channel: ${err.message}`)], ephemeral: true });
+  }
   if (!channel) {
-    return interaction.reply({ embeds: [errorEmbed('No announcement channel set. Use `/setchannel` first.')], ephemeral: true });
+    return interaction.reply({ embeds: [errorEmbed('No announcement channel set (or the bot can no longer see it). Use `/setchannel` first.')], ephemeral: true });
   }
 
   await interaction.deferReply({ ephemeral: true });
 
-  const gwRows = await db.getGameweekLeaderboard(gameweek, 'Premier League');
-  await channel.send({ embeds: [leaderboardEmbed(gwRows, `FINAL GW${gameweek} Standings — Premier League`)] });
+  try {
+    const gwRows = await db.getGameweekLeaderboard(gameweek, 'Premier League');
+    await channel.send({ embeds: [leaderboardEmbed(gwRows, `FINAL GW${gameweek} Standings — Premier League`)] });
 
-  const seasonRows = await db.getLeaderboard('Premier League');
-  await channel.send({ embeds: [leaderboardEmbed(seasonRows, `Season Standings — Premier League`)] });
+    const seasonRows = await db.getLeaderboard('Premier League');
+    await channel.send({ embeds: [leaderboardEmbed(seasonRows, `Season Standings — Premier League`)] });
 
-  return interaction.editReply({ embeds: [successEmbed(`Preview posted to ${channel} for GW${gameweek}.`)] });
+    return interaction.editReply({ embeds: [successEmbed(`Preview posted to ${channel} for GW${gameweek}.`)] });
+  } catch (err) {
+    console.error('Preview standings error:', err);
+    return interaction.editReply({ embeds: [errorEmbed(`Failed to post to ${channel}: ${err.message}`)] });
+  }
 }
 
 // ── Auto-reminder ─────────────────────────────────────────────
