@@ -47,6 +47,9 @@ async function getAnnouncementChannel() {
 // ── In-memory store for predictgw sessions ────────────────────
 const gwSessions = new Map();
 
+// ── In-memory store for predicttable sessions ──────────────────
+const tableSessions = new Map();
+
 // ── Command router ────────────────────────────────────────────
 
 client.on('interactionCreate', async (interaction) => {
@@ -63,8 +66,8 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.isButton() && interaction.customId.startsWith('predictgw_next_')) {
     return await handlePredictGWNextPage(interaction);
   }
-  if (interaction.isModalSubmit() && interaction.customId === 'predicttable_submit') {
-    return await handleTablePredictModalSubmit(interaction);
+  if (interaction.isStringSelectMenu() && interaction.customId === 'predicttable_pick') {
+    return await handleTablePredictPick(interaction);
   }
   if (!interaction.isChatInputCommand()) return;
   try {
@@ -426,67 +429,25 @@ function buildSummaryEmbed(session) {
 }
 
 // ── /predicttable ────────────────────────────────────────────
-// Predict the final Premier League table — paste all 20 teams, one per
-// line, in predicted finishing order, into a single modal field.
+// Predict the final Premier League table — one dropdown pick per position;
+// each picked team disappears from the list for the next pick.
 
 const TABLE_SIZE = 20;
 
-// Common nicknames/abbreviations -> a substring that's unambiguous within
-// their official name, so "Spurs" resolves to whichever synced team name
-// contains "tottenham". Only includes nicknames that map to one club.
-const TEAM_ALIASES = {
-  spurs: 'tottenham',
-  gunners: 'arsenal',
-  gooners: 'arsenal',
-  toffees: 'everton',
-  hammers: 'west ham',
-  irons: 'west ham',
-  villans: 'aston villa',
-  saints: 'southampton',
-  cherries: 'bournemouth',
-  eagles: 'crystal palace',
-  hornets: 'watford',
-  canaries: 'norwich',
-  baggies: 'west bromwich',
-  foxes: 'leicester',
-  magpies: 'newcastle',
-  seagulls: 'brighton',
-  cottagers: 'fulham',
-  blades: 'sheffield united',
-  owls: 'sheffield wednesday',
-  'red devils': 'manchester united',
-  'man utd': 'manchester united',
-  'man u': 'manchester united',
-  manu: 'manchester united',
-  'man city': 'manchester city',
-  mcfc: 'manchester city',
-  citizens: 'manchester city',
-  cityzens: 'manchester city',
-  'west brom': 'west bromwich',
-  forest: 'nottingham forest',
-  'nottm forest': 'nottingham forest',
-  boro: 'middlesbrough',
-  terriers: 'huddersfield',
-  'tractor boys': 'ipswich',
-  clarets: 'burnley',
-  wolves: 'wolverhampton',
-};
+function buildTablePickRow(remainingTeams, nextPosition) {
+  const menu = new StringSelectMenuBuilder()
+    .setCustomId('predicttable_pick')
+    .setPlaceholder(`Pick your #${nextPosition} team...`)
+    .addOptions(remainingTeams.slice(0, 25).map(t => ({ label: t.length > 100 ? t.slice(0, 97) + '...' : t, value: t })));
+  return new ActionRowBuilder().addComponents(menu);
+}
 
-// Resolves free-text team input against the synced team list: tries an exact
-// match first, then falls back to a substring match (via the alias table
-// above, or the raw input itself) — but only if exactly one team matches, so
-// genuinely ambiguous input like "City" or "United" is rejected rather than
-// silently guessed.
-function resolveTeam(raw, validTeams) {
-  const input = (raw || '').trim().toLowerCase();
-  if (!input) return { match: null, candidates: [] };
-
-  const exact = validTeams.find(t => t.toLowerCase() === input);
-  if (exact) return { match: exact, candidates: [exact] };
-
-  const needle = TEAM_ALIASES[input] || input;
-  const candidates = validTeams.filter(t => t.toLowerCase().includes(needle));
-  return { match: candidates.length === 1 ? candidates[0] : null, candidates };
+function tablePickEmbed(picks, nextPosition) {
+  const lines = picks.length > 0 ? picks.map(p => `**${p.position}.** ${p.team}`).join('\n') : 'None yet';
+  return new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle(`⚽ Predict the Table — Position ${nextPosition}`)
+    .setDescription(`Pick who finishes **#${nextPosition}**.\n\n**Picked so far:**\n${lines}`);
 }
 
 async function handlePredictTable(interaction) {
@@ -495,77 +456,46 @@ async function handlePredictTable(interaction) {
     return interaction.reply({ embeds: [errorEmbed(`Only ${teams.length} Premier League team(s) found in the database — an admin needs to run \`/sync\` once full-season fixtures are available before table predictions can open.`)], ephemeral: true });
   }
 
-  const existing = await db.getUserTablePrediction(interaction.user.id);
-  const prefill = existing.length > 0 ? existing.map(r => r.team).join('\n') : '';
+  tableSessions.set(interaction.user.id, { remaining: [...teams], picks: [] });
 
-  const input = new TextInputBuilder()
-    .setCustomId('table_list')
-    .setLabel('Paste all 20 teams, one per line, in order')
-    .setStyle(TextInputStyle.Paragraph)
-    .setPlaceholder('1. Arsenal\n2. Liverpool\n3. Spurs\n...\n20. Sunderland')
-    .setRequired(true);
-  if (prefill) input.setValue(prefill);
-
-  const modal = new ModalBuilder()
-    .setCustomId('predicttable_submit')
-    .setTitle('Predict the Final Table')
-    .addComponents(new ActionRowBuilder().addComponents(input));
-
-  return interaction.showModal(modal);
+  return interaction.reply({
+    embeds: [tablePickEmbed([], 1)],
+    components: [buildTablePickRow(teams, 1)],
+    ephemeral: true,
+  });
 }
 
-async function handleTablePredictModalSubmit(interaction) {
-  const raw = interaction.fields.getTextInputValue('table_list');
-  // Accept one team per line, and tolerate a leading "1.", "1)" etc. or commas
-  const lines = raw
-    .split(/\r?\n|,/)
-    .map(s => s.replace(/^\s*\d+[.)]\s*/, '').trim())
-    .filter(Boolean);
+async function handleTablePredictPick(interaction) {
+  const session = tableSessions.get(interaction.user.id);
+  if (!session) {
+    return interaction.update({ embeds: [errorEmbed('The bot restarted while you were predicting. Please run /predicttable again to start fresh.')], components: [] });
+  }
 
-  if (lines.length !== TABLE_SIZE) {
-    return interaction.reply({
-      embeds: [errorEmbed(`Table not saved — found ${lines.length} team${lines.length === 1 ? '' : 's'}, need exactly ${TABLE_SIZE}. Put one team per line (or comma-separated), in your predicted finishing order.`)],
-      ephemeral: true,
+  const picked = interaction.values[0];
+  session.picks.push({ team: picked, position: session.picks.length + 1 });
+  session.remaining = session.remaining.filter(t => t !== picked);
+
+  // Only one team left — no need to make them click again, just assign it
+  if (session.remaining.length === 1) {
+    session.picks.push({ team: session.remaining[0], position: session.picks.length + 1 });
+    session.remaining = [];
+  }
+
+  if (session.remaining.length === 0) {
+    await db.saveTablePrediction(interaction.user.id, interaction.user.username, session.picks);
+    tableSessions.delete(interaction.user.id);
+
+    const lines = session.picks.map(p => `**${p.position}.** ${p.team}`).join('\n');
+    return interaction.update({
+      embeds: [new EmbedBuilder().setColor(0x57f287).setTitle('✅ Table Prediction Saved!').setDescription(lines).setFooter({ text: 'Run /predicttable again any time to update it' })],
+      components: [],
     });
   }
 
-  const teams = await db.getPLTeams();
-  const entries = [];
-  const errors = [];
-  const seen = new Set();
-
-  lines.forEach((line, i) => {
-    const pos = i + 1;
-    const { match, candidates } = resolveTeam(line, teams);
-    if (!match) {
-      if (candidates.length > 1) {
-        errors.push(`Line ${pos}: "${line}" could mean ${candidates.join(' or ')} — be more specific.`);
-      } else {
-        errors.push(`Line ${pos}: "${line}" isn't a recognised Premier League team.`);
-      }
-      return;
-    }
-    if (seen.has(match)) {
-      errors.push(`Line ${pos}: "${match}" is already used at another position.`);
-      return;
-    }
-    seen.add(match);
-    entries.push({ team: match, position: pos });
-  });
-
-  if (errors.length > 0) {
-    return interaction.reply({
-      embeds: [errorEmbed(`Table not saved — fix these and run \`/predicttable\` again:\n${errors.join('\n')}`)],
-      ephemeral: true,
-    });
-  }
-
-  await db.saveTablePrediction(interaction.user.id, interaction.user.username, entries);
-
-  const lines2 = entries.map(e => `**${e.position}.** ${e.team}`).join('\n');
-  return interaction.reply({
-    embeds: [new EmbedBuilder().setColor(0x57f287).setTitle('✅ Table Prediction Saved!').setDescription(lines2).setFooter({ text: 'Run /predicttable again any time to update it' })],
-    ephemeral: true,
+  const nextPosition = session.picks.length + 1;
+  return interaction.update({
+    embeds: [tablePickEmbed(session.picks, nextPosition)],
+    components: [buildTablePickRow(session.remaining, nextPosition)],
   });
 }
 
