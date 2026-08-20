@@ -141,6 +141,11 @@ const commands = [
     .setDescription('[ADMIN] Configure server-wide bot settings')
     .addBooleanOption(o => o.setName('remindmissing_dms').setDescription('Send DMs to missing users when /remindmissing is run').setRequired(true)),
 
+  new SlashCommandBuilder()
+    .setName('previewstandings')
+    .setDescription('[ADMIN] Post an example gameweek + season standings message to the announcement channel')
+    .addIntegerOption(o => o.setName('gameweek').setDescription('Gameweek number to preview (defaults to 1)')),
+
 ].map(c => c.toJSON());
 
 module.exports = commands;

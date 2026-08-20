@@ -98,6 +98,7 @@ client.on('interactionCreate', async (interaction) => {
       case 'audit':            return await handleAudit(interaction);
       case 'remindmissing':    return await handleRemindMissing(interaction);
       case 'serversettings':   return await handleServerSettings(interaction);
+      case 'previewstandings': return await handlePreviewStandings(interaction);
     }
   } catch (err) {
     console.error(`Error in /${interaction.commandName}:`, err);
@@ -1172,6 +1173,31 @@ async function handleServerSettings(interaction) {
     .setFooter({ text: 'Run /serversettings with no options to view all current settings.' });
 
   return interaction.editReply({ embeds: [embed] });
+}
+
+// ── /previewstandings ────────────────────────────────────────
+// Posts the same "FINAL GW standings" + "Season standings" pair that
+// autoSync sends at gameweek-end, on demand — useful for previewing the
+// format before real results exist, without waiting for a gameweek to finish.
+
+async function handlePreviewStandings(interaction) {
+  if (!isAdmin(interaction)) return interaction.reply({ embeds: [errorEmbed('No permission.')], ephemeral: true });
+
+  const gameweek = interaction.options.getInteger('gameweek') || 1;
+  const channel = await getAnnouncementChannel();
+  if (!channel) {
+    return interaction.reply({ embeds: [errorEmbed('No announcement channel set. Use `/setchannel` first.')], ephemeral: true });
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+
+  const gwRows = await db.getGameweekLeaderboard(gameweek, 'Premier League');
+  await channel.send({ embeds: [leaderboardEmbed(gwRows, `FINAL GW${gameweek} Standings — Premier League`)] });
+
+  const seasonRows = await db.getLeaderboard('Premier League');
+  await channel.send({ embeds: [leaderboardEmbed(seasonRows, `Season Standings — Premier League`)] });
+
+  return interaction.editReply({ embeds: [successEmbed(`Preview posted to ${channel} for GW${gameweek}.`)] });
 }
 
 // ── Auto-reminder ─────────────────────────────────────────────
