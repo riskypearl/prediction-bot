@@ -1414,6 +1414,11 @@ async function autoSync() {
                     await channel.send({ embeds: [leaderboardEmbed(gwRows, `FINAL GW${match.gameweek} Standings — ${match.competition}`)] });
                   }
 
+                  const seasonRows = await db.getLeaderboard(match.competition);
+                  if (seasonRows.length > 0) {
+                    await channel.send({ embeds: [leaderboardEmbed(seasonRows, `Season Standings — ${match.competition}`)] });
+                  }
+
                   // Every 5th completed PL gameweek, post a table-prediction check-in
                   if (match.competition === 'Premier League' && match.gameweek % 5 === 0) {
                     const checkinKey = `table_checkin_sent_${match.gameweek}`;
