@@ -438,6 +438,64 @@ function buildSummaryEmbed(session) {
 const TABLE_SIZE = 20;
 const TABLE_PAGE_SIZE = 5;
 
+// Common nicknames/abbreviations -> a substring that's unambiguous within
+// their official name, so "Spurs" resolves to whichever synced team name
+// contains "tottenham". Only includes nicknames that map to one club.
+const TEAM_ALIASES = {
+  spurs: 'tottenham',
+  gunners: 'arsenal',
+  gooners: 'arsenal',
+  toffees: 'everton',
+  hammers: 'west ham',
+  irons: 'west ham',
+  villans: 'aston villa',
+  saints: 'southampton',
+  cherries: 'bournemouth',
+  eagles: 'crystal palace',
+  hornets: 'watford',
+  canaries: 'norwich',
+  baggies: 'west bromwich',
+  foxes: 'leicester',
+  magpies: 'newcastle',
+  seagulls: 'brighton',
+  cottagers: 'fulham',
+  blades: 'sheffield united',
+  owls: 'sheffield wednesday',
+  'red devils': 'manchester united',
+  'man utd': 'manchester united',
+  'man u': 'manchester united',
+  manu: 'manchester united',
+  'man city': 'manchester city',
+  mcfc: 'manchester city',
+  citizens: 'manchester city',
+  cityzens: 'manchester city',
+  'west brom': 'west bromwich',
+  forest: 'nottingham forest',
+  'nottm forest': 'nottingham forest',
+  boro: 'middlesbrough',
+  terriers: 'huddersfield',
+  'tractor boys': 'ipswich',
+  clarets: 'burnley',
+  wolves: 'wolverhampton',
+};
+
+// Resolves free-text team input against the synced team list: tries an exact
+// match first, then falls back to a substring match (via the alias table
+// above, or the raw input itself) — but only if exactly one team matches, so
+// genuinely ambiguous input like "City" or "United" is rejected rather than
+// silently guessed.
+function resolveTeam(raw, validTeams) {
+  const input = (raw || '').trim().toLowerCase();
+  if (!input) return { match: null, candidates: [] };
+
+  const exact = validTeams.find(t => t.toLowerCase() === input);
+  if (exact) return { match: exact, candidates: [exact] };
+
+  const needle = TEAM_ALIASES[input] || input;
+  const candidates = validTeams.filter(t => t.toLowerCase().includes(needle));
+  return { match: candidates.length === 1 ? candidates[0] : null, candidates };
+}
+
 async function handlePredictTable(interaction) {
   const teams = await db.getPLTeams();
   if (teams.length < TABLE_SIZE) {
@@ -469,7 +527,7 @@ function buildTableModal(userId, page) {
       .setCustomId(`pos_${i}`)
       .setLabel(`Position ${i}`)
       .setStyle(TextInputStyle.Short)
-      .setPlaceholder('e.g. Arsenal')
+      .setPlaceholder('e.g. Arsenal, Spurs, Man City')
       .setRequired(true);
     if (prefill) input.setValue(prefill);
     modal.addComponents(new ActionRowBuilder().addComponents(input));
@@ -510,16 +568,19 @@ async function handleTablePredictModalSubmit(interaction) {
   // Final page — validate the full table: every position filled, every entry
   // a recognised team, and no team used twice.
   const { teams } = session;
-  const teamLookup = new Map(teams.map(t => [t.toLowerCase(), t]));
   const entries = [];
   const errors = [];
   const seen = new Set();
 
   for (let pos = 1; pos <= TABLE_SIZE; pos++) {
     const raw = session.answers[pos];
-    const match = teamLookup.get((raw || '').toLowerCase());
+    const { match, candidates } = resolveTeam(raw, teams);
     if (!match) {
-      errors.push(`Position ${pos}: "${raw}" isn't a recognised Premier League team.`);
+      if (candidates.length > 1) {
+        errors.push(`Position ${pos}: "${raw}" could mean ${candidates.join(' or ')} — be more specific.`);
+      } else {
+        errors.push(`Position ${pos}: "${raw}" isn't a recognised Premier League team.`);
+      }
       continue;
     }
     if (seen.has(match)) {
