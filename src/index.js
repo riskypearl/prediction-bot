@@ -13,18 +13,8 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 async function registerCommands() {
   try {
     const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN);
-    // Guild-scoped commands update instantly; global commands can take up to
-    // an hour to propagate to clients. Prefer guild-scoped when GUILD_ID is set,
-    // and clear any previously-registered global commands so they don't show
-    // up as duplicates alongside the guild-scoped ones.
-    if (process.env.GUILD_ID) {
-      await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: [] });
-      await rest.put(Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID), { body: commands });
-      console.log('✅ Slash commands registered (guild-scoped)');
-    } else {
-      await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: commands });
-      console.log('✅ Slash commands registered (global)');
-    }
+    await rest.put(Routes.applicationCommands(process.env.CLIENT_ID), { body: commands });
+    console.log('✅ Slash commands registered (global)');
   } catch (err) {
     console.error('Slash command registration failed:', err.message);
   }
