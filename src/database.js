@@ -552,6 +552,19 @@ async function getAllTablePredictionsGrouped() {
   return [...byUser.values()];
 }
 
+// ── Wipe everyone's stats & predictions (match/table prediction data left intact) ──
+
+async function wipeAllProfilesAndPredictions() {
+  const predictions = await execute('DELETE FROM predictions');
+  const auditLog = await execute('DELETE FROM prediction_audit_log');
+  const userStats = await execute('DELETE FROM user_stats');
+  return {
+    predictions: predictions.rowCount ?? 0,
+    auditLog: auditLog.rowCount ?? 0,
+    userStats: userStats.rowCount ?? 0,
+  };
+}
+
 module.exports = {
   db, query, queryOne, addMatch, getMatch, getUpcomingMatches, getMatchesByGameweek, getMatchesByDate,
   getUnlockedPastMatches, lockMatch, unlockMatch, lockGroupMatches, setResult,
@@ -560,4 +573,5 @@ module.exports = {
   getPredictionsForMatch, getLeaderboard, getGameweekLeaderboard, getDayLeaderboard,
   getUserProfile, getH2H, getSetting, setSetting, calcPoints,
   getPLTeams, saveTablePrediction, getUserTablePrediction, getAllTablePredictionsGrouped,
+  wipeAllProfilesAndPredictions,
 };

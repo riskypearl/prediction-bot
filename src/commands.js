@@ -53,11 +53,6 @@ const commands = [
     .setDescription('View all your predictions'),
 
   new SlashCommandBuilder()
-    .setName('viewpredictions')
-    .setDescription('View predictions for a match (subject to reveal settings)')
-    .addIntegerOption(o => o.setName('match_id').setDescription('Match ID to view predictions for').setRequired(true)),
-
-  new SlashCommandBuilder()
     .setName('leaderboard')
     .setDescription('Show standings')
     .addStringOption(o => o.setName('competition').setDescription('Filter').addChoices(
@@ -145,6 +140,11 @@ const commands = [
     .setName('previewstandings')
     .setDescription('[ADMIN] Post an example gameweek + season standings message to the announcement channel')
     .addIntegerOption(o => o.setName('gameweek').setDescription('Gameweek number to preview (defaults to 1)')),
+
+  new SlashCommandBuilder()
+    .setName('wipeprofiles')
+    .setDescription('[ADMIN] Permanently reset all stats and delete all predictions for every user')
+    .addStringOption(o => o.setName('confirm').setDescription('Type "WIPE EVERYONE" exactly to confirm').setRequired(true)),
 
 ].map(c => c.toJSON());
 

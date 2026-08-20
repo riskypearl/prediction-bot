@@ -75,7 +75,6 @@ client.on('interactionCreate', async (interaction) => {
       case 'predict':          return await handlePredict(interaction);
       case 'predictgw':        return await handlePredictGW(interaction);
       case 'predicttable':     return await handlePredictTable(interaction);
-      case 'viewpredictions':  return await handleViewPredictions(interaction);
       case 'matches':          return await handleMatches(interaction);
       case 'fixtures':         return await handleFixtures(interaction);
       case 'results':          return await handleResults(interaction);
@@ -95,6 +94,7 @@ client.on('interactionCreate', async (interaction) => {
       case 'remindmissing':    return await handleRemindMissing(interaction);
       case 'serversettings':   return await handleServerSettings(interaction);
       case 'previewstandings': return await handlePreviewStandings(interaction);
+      case 'wipeprofiles':     return await handleWipeProfiles(interaction);
     }
   } catch (err) {
     console.error(`Error in /${interaction.commandName}:`, err);
@@ -901,47 +901,6 @@ async function handleAdminCheck(interaction) {
   return interaction.editReply({ embeds: [embed] });
 }
 
-// ── /viewpredictions ──────────────────────────────────────────
-
-async function handleViewPredictions(interaction) {
-  const matchId = interaction.options.getInteger('match_id');
-  const isAdmin  = interaction.member?.permissions.has('ManageGuild');
-
-  const match = await db.getMatch(matchId);
-  if (!match) return interaction.reply({ embeds: [errorEmbed(`Match #${matchId} not found.`)], ephemeral: true });
-
-  const revealSetting = (await db.getSetting('reveal_predictions')) ?? 'after_lock';
-
-  if (!isAdmin) {
-    if (revealSetting === 'never') {
-      return interaction.reply({ embeds: [errorEmbed('Predictions are kept private for this server.')], ephemeral: true });
-    }
-    if (revealSetting === 'after_lock' && !match.locked) {
-      return interaction.reply({ embeds: [errorEmbed('Predictions are hidden until the match locks.')], ephemeral: true });
-    }
-    if (revealSetting === 'after_results' && match.home_score === null) {
-      return interaction.reply({ embeds: [errorEmbed('Predictions are hidden until results are entered.')], ephemeral: true });
-    }
-  }
-
-  const preds = await db.getPredictionsForMatch(matchId);
-  if (preds.length === 0) return interaction.reply({ embeds: [errorEmbed('No predictions found for this match.')], ephemeral: true });
-
-  const lines = preds.map(p => {
-    const pts = p.points !== null ? ` → **${p.points}pts** ${p.points >= 7 ? '💥' : p.points >= 5 ? '🎯' : p.points >= 3 ? '✅' : p.points > 0 ? '📏' : '❌'}` : '';
-    return `**${p.username}**: ${p.home_score}–${p.away_score}${pts}`;
-  });
-
-  const result = match.home_score !== null ? `Result: **${match.home_score}–${match.away_score}**` : 'Result: Pending';
-  const gw = match.gameweek ? ` · GW${match.gameweek}` : '';
-  const embed = new EmbedBuilder().setColor(0x5865f2)
-    .setTitle(`👁️ Predictions — ${match.home_team} vs ${match.away_team}`)
-    .setDescription(`${result}\n\n${lines.join('\n')}`)
-    .setFooter({ text: `#${matchId} · ${match.competition}${gw} · ${preds.length} prediction(s)` });
-
-  return interaction.reply({ embeds: [embed], ephemeral: true });
-}
-
 // ── /audit (admin) ────────────────────────────────────────────
 
 async function handleAudit(interaction) {
@@ -1148,6 +1107,36 @@ async function handlePreviewStandings(interaction) {
   } catch (err) {
     console.error('Preview standings error:', err);
     return interaction.editReply({ embeds: [errorEmbed(`Failed to post to ${channel}: ${err.message}`)] });
+  }
+}
+
+// ── /wipeprofiles ────────────────────────────────────────────
+// Permanently resets everyone's points/stats and deletes every match
+// prediction. Affects every server this bot is installed in (one shared
+// database) — requires typing the exact confirmation phrase to run.
+
+const WIPE_CONFIRM_PHRASE = 'WIPE EVERYONE';
+
+async function handleWipeProfiles(interaction) {
+  if (!isAdmin(interaction)) return interaction.reply({ embeds: [errorEmbed('No permission.')], ephemeral: true });
+
+  const confirm = interaction.options.getString('confirm');
+  if (confirm !== WIPE_CONFIRM_PHRASE) {
+    return interaction.reply({
+      embeds: [errorEmbed(`This permanently deletes **every prediction** and resets **every user's stats to zero** — for everyone, in every server this bot is in. This cannot be undone.\n\nTo proceed, run this again with \`confirm\` set to exactly: \`${WIPE_CONFIRM_PHRASE}\``)],
+      ephemeral: true,
+    });
+  }
+
+  await interaction.deferReply({ ephemeral: true });
+  try {
+    const result = await db.wipeAllProfilesAndPredictions();
+    return interaction.editReply({
+      embeds: [successEmbed(`Wiped: ${result.predictions} prediction(s), ${result.auditLog} audit log entry/entries, ${result.userStats} user stat row(s) reset.`)],
+    });
+  } catch (err) {
+    console.error('Wipe profiles error:', err);
+    return interaction.editReply({ embeds: [errorEmbed(`Failed: ${err.message}`)] });
   }
 }
 
