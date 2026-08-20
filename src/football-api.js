@@ -111,4 +111,13 @@ async function getRecentResults(competitionName, limit = 10) {
   );
 }
 
-module.exports = { syncAll, syncFixtures, syncResults, getUpcoming, getRecentResults };
+async function getStandings(competitionName) {
+  const code = COMPETITIONS[competitionName];
+  if (!code) return [];
+  const data = await apiFetch(`/competitions/${code}/standings`);
+  const total = (data.standings || []).find(s => s.type === 'TOTAL');
+  if (!total) return [];
+  return total.table.map(row => ({ position: row.position, team: row.team.name }));
+}
+
+module.exports = { syncAll, syncFixtures, syncResults, getUpcoming, getRecentResults, getStandings };

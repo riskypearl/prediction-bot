@@ -80,6 +80,16 @@ async function init() {
       new_away_score INTEGER NOT NULL,
       changed_at TEXT DEFAULT (NOW()::TEXT)
     );
+
+    CREATE TABLE IF NOT EXISTS table_predictions (
+      id SERIAL PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      username TEXT NOT NULL,
+      team TEXT NOT NULL,
+      predicted_position INTEGER NOT NULL,
+      created_at TEXT DEFAULT (NOW()::TEXT),
+      UNIQUE(user_id, team)
+    );
   `);
 }
 
@@ -501,6 +511,47 @@ async function lockGroupMatches(matchIds) {
   return res.rowCount ?? 0;
 }
 
+// ── Table predictions (predict the final PL table) ─────────────
+
+async function getPLTeams() {
+  const rows = await query(
+    `SELECT home_team AS team FROM matches WHERE competition = 'Premier League'
+     UNION
+     SELECT away_team AS team FROM matches WHERE competition = 'Premier League'
+     ORDER BY team`
+  );
+  return rows.map(r => r.team);
+}
+
+async function saveTablePrediction(userId, username, entries) {
+  await execute('DELETE FROM table_predictions WHERE user_id = $1', [userId]);
+  for (const { team, position } of entries) {
+    await execute(
+      `INSERT INTO table_predictions (user_id, username, team, predicted_position) VALUES ($1, $2, $3, $4)`,
+      [userId, username, team, position]
+    );
+  }
+}
+
+async function getUserTablePrediction(userId) {
+  return query(
+    `SELECT team, predicted_position FROM table_predictions WHERE user_id = $1 ORDER BY predicted_position ASC`,
+    [userId]
+  );
+}
+
+async function getAllTablePredictionsGrouped() {
+  const rows = await query(
+    `SELECT user_id, username, team, predicted_position FROM table_predictions ORDER BY user_id, predicted_position ASC`
+  );
+  const byUser = new Map();
+  for (const row of rows) {
+    if (!byUser.has(row.user_id)) byUser.set(row.user_id, { user_id: row.user_id, username: row.username, entries: [] });
+    byUser.get(row.user_id).entries.push({ team: row.team, position: row.predicted_position });
+  }
+  return [...byUser.values()];
+}
+
 module.exports = {
   db, query, queryOne, addMatch, getMatch, getUpcomingMatches, getMatchesByGameweek, getMatchesByDate,
   getUnlockedPastMatches, lockMatch, unlockMatch, lockGroupMatches, setResult,
@@ -508,4 +559,5 @@ module.exports = {
   getRecentAuditLog, getCurrentGWMatches, cleanupReminderKeys, getCompetitionStats,
   getPredictionsForMatch, getLeaderboard, getGameweekLeaderboard, getDayLeaderboard,
   getUserProfile, getH2H, getSetting, setSetting, calcPoints,
+  getPLTeams, saveTablePrediction, getUserTablePrediction, getAllTablePredictionsGrouped,
 };

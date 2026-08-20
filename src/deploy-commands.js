@@ -16,6 +16,10 @@ const commands = [
     .setDescription('Quickly predict all matches in the next open Premier League gameweek'),
 
   new SlashCommandBuilder()
+    .setName('predicttable')
+    .setDescription('Predict the final Premier League table (all 20 teams, in order)'),
+
+  new SlashCommandBuilder()
     .setName('matches')
     .setDescription('View upcoming matches')
     .addStringOption(o => o.setName('competition').setDescription('Filter by competition').addChoices(

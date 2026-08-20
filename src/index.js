@@ -35,6 +35,9 @@ async function getAnnouncementChannel() {
 // ── In-memory store for predictgw sessions ────────────────────
 const gwSessions = new Map();
 
+// ── In-memory store for predicttable sessions ──────────────────
+const tableSessions = new Map();
+
 // ── Command router ────────────────────────────────────────────
 
 client.on('interactionCreate', async (interaction) => {
@@ -51,11 +54,19 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.isButton() && interaction.customId.startsWith('predictgw_next_')) {
     return await handlePredictGWNextPage(interaction);
   }
+  if (interaction.isModalSubmit() && interaction.customId.startsWith('predicttable_page')) {
+    return await handleTablePredictModalSubmit(interaction);
+  }
+  // Button to open next predicttable modal page
+  if (interaction.isButton() && interaction.customId.startsWith('predicttable_next_')) {
+    return await handleTablePredictNextPage(interaction);
+  }
   if (!interaction.isChatInputCommand()) return;
   try {
     switch (interaction.commandName) {
       case 'predict':          return await handlePredict(interaction);
       case 'predictgw':        return await handlePredictGW(interaction);
+      case 'predicttable':     return await handlePredictTable(interaction);
       case 'viewpredictions':  return await handleViewPredictions(interaction);
       case 'matches':          return await handleMatches(interaction);
       case 'fixtures':         return await handleFixtures(interaction);
@@ -406,6 +417,133 @@ function buildSummaryEmbed(session) {
   }
   embed.setFooter({ text: 'Use /predictgw again to update any predictions before kickoff.' });
   return embed;
+}
+
+// ── /predicttable ────────────────────────────────────────────
+// Predict the final Premier League table (20 teams, 5 positions per page)
+
+const TABLE_SIZE = 20;
+const TABLE_PAGE_SIZE = 5;
+
+async function handlePredictTable(interaction) {
+  const teams = await db.getPLTeams();
+  if (teams.length < TABLE_SIZE) {
+    return interaction.reply({ embeds: [errorEmbed(`Only ${teams.length} Premier League team(s) found in the database — an admin needs to run \`/sync\` once full-season fixtures are available before table predictions can open.`)], ephemeral: true });
+  }
+
+  const existing = await db.getUserTablePrediction(interaction.user.id);
+  const existingByPosition = {};
+  for (const row of existing) existingByPosition[row.predicted_position] = row.team;
+
+  tableSessions.set(interaction.user.id, { teams, answers: {}, existingByPosition });
+
+  return interaction.showModal(buildTableModal(interaction.user.id, 0));
+}
+
+function buildTableModal(userId, page) {
+  const session = tableSessions.get(userId);
+  const { existingByPosition, answers } = session;
+  const start = page * TABLE_PAGE_SIZE;
+  const totalPages = TABLE_SIZE / TABLE_PAGE_SIZE;
+
+  const modal = new ModalBuilder()
+    .setCustomId(`predicttable_page${page}`)
+    .setTitle(`Predict the Table (${page + 1}/${totalPages})`);
+
+  for (let i = start + 1; i <= start + TABLE_PAGE_SIZE; i++) {
+    const prefill = answers[i] || existingByPosition[i] || '';
+    const input = new TextInputBuilder()
+      .setCustomId(`pos_${i}`)
+      .setLabel(`Position ${i}`)
+      .setStyle(TextInputStyle.Short)
+      .setPlaceholder('e.g. Arsenal')
+      .setRequired(true);
+    if (prefill) input.setValue(prefill);
+    modal.addComponents(new ActionRowBuilder().addComponents(input));
+  }
+
+  return modal;
+}
+
+async function handleTablePredictModalSubmit(interaction) {
+  const page = parseInt(interaction.customId.replace('predicttable_page', ''));
+  const session = tableSessions.get(interaction.user.id);
+
+  if (!session) {
+    return interaction.reply({ embeds: [errorEmbed('The bot restarted while you were predicting. Please run /predicttable again to start fresh.')], ephemeral: true });
+  }
+
+  const start = page * TABLE_PAGE_SIZE;
+  for (let i = start + 1; i <= start + TABLE_PAGE_SIZE; i++) {
+    session.answers[i] = interaction.fields.getTextInputValue(`pos_${i}`).trim();
+  }
+
+  const nextPage = page + 1;
+  const totalPages = TABLE_SIZE / TABLE_PAGE_SIZE;
+
+  if (nextPage < totalPages) {
+    const continueBtn = new ButtonBuilder()
+      .setCustomId(`predicttable_next_${nextPage}`)
+      .setLabel(`Continue to positions ${nextPage * TABLE_PAGE_SIZE + 1}–${(nextPage + 1) * TABLE_PAGE_SIZE} →`)
+      .setStyle(ButtonStyle.Primary);
+
+    return interaction.reply({
+      embeds: [new EmbedBuilder().setColor(0x5865f2).setTitle(`⚽ Page ${page + 1} saved! Click to continue...`)],
+      components: [new ActionRowBuilder().addComponents(continueBtn)],
+      ephemeral: true,
+    });
+  }
+
+  // Final page — validate the full table: every position filled, every entry
+  // a recognised team, and no team used twice.
+  const { teams } = session;
+  const teamLookup = new Map(teams.map(t => [t.toLowerCase(), t]));
+  const entries = [];
+  const errors = [];
+  const seen = new Set();
+
+  for (let pos = 1; pos <= TABLE_SIZE; pos++) {
+    const raw = session.answers[pos];
+    const match = teamLookup.get((raw || '').toLowerCase());
+    if (!match) {
+      errors.push(`Position ${pos}: "${raw}" isn't a recognised Premier League team.`);
+      continue;
+    }
+    if (seen.has(match)) {
+      errors.push(`Position ${pos}: "${match}" is already used at another position.`);
+      continue;
+    }
+    seen.add(match);
+    entries.push({ team: match, position: pos });
+  }
+
+  if (errors.length > 0) {
+    tableSessions.delete(interaction.user.id);
+    return interaction.reply({
+      embeds: [errorEmbed(`Table not saved — fix these and run \`/predicttable\` again:\n${errors.join('\n')}`)],
+      ephemeral: true,
+    });
+  }
+
+  await db.saveTablePrediction(interaction.user.id, interaction.user.username, entries);
+  tableSessions.delete(interaction.user.id);
+
+  const lines = entries.map(e => `**${e.position}.** ${e.team}`).join('\n');
+  return interaction.reply({
+    embeds: [new EmbedBuilder().setColor(0x57f287).setTitle('✅ Table Prediction Saved!').setDescription(lines).setFooter({ text: 'Run /predicttable again any time to update it' })],
+    ephemeral: true,
+  });
+}
+
+async function handleTablePredictNextPage(interaction) {
+  const nextPage = parseInt(interaction.customId.replace('predicttable_next_', ''));
+  const session = tableSessions.get(interaction.user.id);
+
+  if (!session) {
+    return interaction.reply({ embeds: [errorEmbed('The bot restarted while you were predicting. Please run /predicttable again to start fresh.')], ephemeral: true });
+  }
+
+  return interaction.showModal(buildTableModal(interaction.user.id, nextPage));
 }
 
 // ── /matches ──────────────────────────────────────────────────
@@ -1175,6 +1313,50 @@ async function autoLockMatches() {
   }
 }
 
+// ── Table prediction check-in (every 5th completed PL gameweek) ─
+
+async function announceTableCheckin(channel, gameweek) {
+  if (!channel) return;
+  try {
+    const standings = await api.getStandings('Premier League');
+    if (standings.length === 0) return;
+    const actualPosByTeam = new Map(standings.map(s => [s.team, s.position]));
+
+    const users = await db.getAllTablePredictionsGrouped();
+    if (users.length === 0) return;
+
+    const scored = users
+      .map(u => {
+        let distance = 0;
+        let counted = 0;
+        for (const { team, position } of u.entries) {
+          const actual = actualPosByTeam.get(team);
+          if (actual == null) continue;
+          distance += Math.abs(position - actual);
+          counted++;
+        }
+        return { username: u.username, distance, counted };
+      })
+      .filter(u => u.counted > 0)
+      .sort((a, b) => a.distance - b.distance);
+
+    if (scored.length === 0) return;
+
+    const medals = ['🥇', '🥈', '🥉'];
+    const lines = scored.map((u, i) => `${medals[i] || `**${i + 1}.**`} **${u.username}** — ${u.distance} off`);
+
+    const embed = new EmbedBuilder()
+      .setColor(0xc8aa5a)
+      .setTitle(`📊 Table Prediction Check-in — After GW${gameweek}`)
+      .setDescription(lines.join('\n'))
+      .setFooter({ text: 'Lower = closer to the real table · Run /predicttable to submit or update yours' });
+
+    await channel.send({ embeds: [embed] });
+  } catch (err) {
+    console.error('Table check-in error:', err.message);
+  }
+}
+
 // ── Auto-sync ─────────────────────────────────────────────────
 
 async function autoSync() {
@@ -1218,6 +1400,16 @@ async function autoSync() {
                   await db.setSetting(dedupKey, 'true');
                   if (gwRows.length > 0) {
                     await channel.send({ embeds: [leaderboardEmbed(gwRows, `FINAL GW${match.gameweek} Standings — ${match.competition}`)] });
+                  }
+
+                  // Every 5th completed PL gameweek, post a table-prediction check-in
+                  if (match.competition === 'Premier League' && match.gameweek % 5 === 0) {
+                    const checkinKey = `table_checkin_sent_${match.gameweek}`;
+                    const checkinSent = await db.getSetting(checkinKey);
+                    if (!checkinSent) {
+                      await db.setSetting(checkinKey, 'true');
+                      await announceTableCheckin(channel, match.gameweek);
+                    }
                   }
                 }
               }
